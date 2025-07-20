@@ -1,0 +1,24 @@
+# Core dependencies - compatible versions
+neo4j>=5.0.0,<6.0.0
+osmnx>=1.6.0
+geopandas>=0.12.0
+networkx>=3.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# ML packages
+scikit-learn>=1.2.0
+xgboost>=1.7.0
+
+# Configuration (fixed versions)
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Development tools
+pytest>=7.0.0
+jupyter>=1.0.0
+
+# Visualization
+matplotlib>=3.6.0
+plotly>=5.0.0
