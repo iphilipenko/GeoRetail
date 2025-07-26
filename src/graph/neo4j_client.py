@@ -34,8 +34,10 @@ class GeoRetailNeo4jClient:
             with self.driver.session(database=settings.neo4j_database) as session:
                 session.run("RETURN 1")
             logger.info("✅ Connected to Neo4j GeoRetail database")
+            print("✅ Connected to Neo4j GeoRetail database")
         except Exception as e:
             logger.error(f"❌ Failed to connect to Neo4j: {e}")
+            print(f"❌ Failed to connect to Neo4j: {e}")
             raise
     
     def close(self):
@@ -52,11 +54,46 @@ class GeoRetailNeo4jClient:
                 return [record.data() for record in result]
         except Exception as e:
             logger.error(f"Query failed: {e}")
+            print(f"Query failed: {e}")
             raise
+    
+    def _sanitize_properties(self, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize properties for Neo4j storage - convert complex types to primitives"""
+        sanitized = {}
+        
+        for key, value in properties.items():
+            if value is None:
+                continue
+            elif isinstance(value, (str, int, float, bool)):
+                sanitized[key] = value
+            elif isinstance(value, dict):
+                # Convert dictionary to JSON string
+                sanitized[f"{key}_json"] = json.dumps(value)
+                # Also extract some key metrics as separate properties
+                if key == "poi_categories":
+                    # Convert poi_categories dict to separate metrics
+                    total_pois = sum(value.values()) if value else 0
+                    sanitized["total_pois"] = total_pois
+                    # Store top 3 categories as separate properties
+                    if value:
+                        sorted_cats = sorted(value.items(), key=lambda x: x[1], reverse=True)
+                        for i, (cat, count) in enumerate(sorted_cats[:3]):
+                            sanitized[f"top_category_{i+1}"] = cat
+                            sanitized[f"top_category_{i+1}_count"] = count
+            elif isinstance(value, list):
+                # Convert list to JSON string
+                sanitized[f"{key}_json"] = json.dumps(value)
+                sanitized[f"{key}_count"] = len(value)
+            else:
+                # Convert any other type to string
+                sanitized[key] = str(value)
+        
+        return sanitized
     
     def setup_graph_schema(self):
         """Create comprehensive graph schema for GeoRetail"""
         logger.info("🏗️  Setting up GeoRetail graph schema...")
+        print("🏗️  Setting up GeoRetail graph schema...")
         
         schema_queries = [
             # Constraints for unique identifiers
@@ -84,14 +121,18 @@ class GeoRetailNeo4jClient:
                 self.execute_query(query)
                 constraint_name = query.split()[2] if "CONSTRAINT" in query else query.split()[2]
                 logger.info(f"  ✅ {constraint_name}")
+                print(f"  ✅ {constraint_name}")
             except Exception as e:
                 logger.warning(f"  ⚠️  Schema: {e}")
+                print(f"  ⚠️  Schema warning: {e}")
     
     def clear_database(self):
         """Clear all nodes and relationships (use with caution!)"""
         logger.warning("🗑️  Clearing database...")
+        print("🗑️  Clearing database...")
         self.execute_query("MATCH (n) DETACH DELETE n")
         logger.info("✅ Database cleared")
+        print("✅ Database cleared")
     
     def create_location_node(self, lat: float, lon: float, **properties) -> str:
         """Create location node with spatial point"""
@@ -108,13 +149,18 @@ class GeoRetailNeo4jClient:
         """
         
         location_id = f"loc_{lat:.6f}_{lon:.6f}".replace(".", "_").replace("-", "neg")
+        
+        # Sanitize properties for Neo4j
+        sanitized_properties = self._sanitize_properties(properties)
+        
         parameters = {
             "location_id": location_id,
             "lat": lat,
             "lon": lon,
-            "properties": properties
+            "properties": sanitized_properties
         }
         
+        print(f"Creating location node: {location_id}")
         result = self.execute_query(query, parameters)
         return result[0]["location_id"] if result else location_id
     
@@ -137,6 +183,11 @@ class GeoRetailNeo4jClient:
         # Categorize POI for better organization
         category = self._categorize_poi(poi_data.get("amenity", ""), poi_data.get("poi_type", ""))
         
+        # Sanitize additional properties
+        additional_props = {k: v for k, v in poi_data.items() 
+                           if k not in ["osm_id", "name", "amenity", "lat", "lon"]}
+        sanitized_additional = self._sanitize_properties(additional_props)
+        
         parameters = {
             "osm_id": str(poi_data.get("osm_id")),
             "name": poi_data.get("name", "Unknown"),
@@ -144,8 +195,7 @@ class GeoRetailNeo4jClient:
             "category": category,
             "lat": poi_data.get("lat"),
             "lon": poi_data.get("lon"),
-            "additional_properties": {k: v for k, v in poi_data.items() 
-                                   if k not in ["osm_id", "name", "amenity", "lat", "lon"]}
+            "additional_properties": sanitized_additional
         }
         
         result = self.execute_query(query, parameters)
@@ -173,6 +223,7 @@ class GeoRetailNeo4jClient:
         result = self.execute_query(query, parameters)
         count = result[0]["relationships_created"] if result else 0
         logger.info(f"✅ Created {count} spatial relationships for {location_id}")
+        print(f"✅ Created {count} spatial relationships for {location_id}")
         return count
     
     def _categorize_poi(self, amenity: str, poi_type: str) -> str:

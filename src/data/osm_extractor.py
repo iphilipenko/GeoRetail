@@ -25,18 +25,29 @@ class GeoRetailOSMExtractor:
         self.cache_dir = Path(settings.osm_cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Configure OSMnx for better performance
-        ox.config(
-            use_cache=True, 
-            cache_folder=str(self.cache_dir),
-            log_console=True
-        )
+        # Configure OSMnx for better performance (updated for new version)
+        try:
+            # New OSMnx API (v1.6+)
+            ox.settings.use_cache = True
+            ox.settings.cache_folder = str(self.cache_dir)
+            ox.settings.log_console = True
+        except AttributeError:
+            # Fallback for older versions
+            try:
+                ox.config(
+                    use_cache=True, 
+                    cache_folder=str(self.cache_dir),
+                    log_console=True
+                )
+            except:
+                print("Warning: Could not configure OSMnx cache")
     
     def extract_location_data(self, lat: float, lon: float) -> Dict[str, Any]:
         """Extract comprehensive location data from OSM"""
         location = (lat, lon)
         
-        logger.info(f"📍 Extracting OSM data for: {lat:.6f}, {lon:.6f}")
+        logger.info(f"Extracting OSM data for: {lat:.6f}, {lon:.6f}")
+        print(f"Extracting OSM data for: {lat:.6f}, {lon:.6f}")
         
         try:
             # Extract different data layers
@@ -60,16 +71,19 @@ class GeoRetailOSMExtractor:
                 "extraction_radius_m": self.radius_meters
             }
             
-            logger.info(f"✅ Extracted: {len(pois)} POIs, {buildings['count']} buildings")
+            logger.info(f"Extracted: {len(pois)} POIs, {buildings['count']} buildings")
+            print(f"Extracted: {len(pois)} POIs, {buildings['count']} buildings")
             return location_data
             
         except Exception as e:
-            logger.error(f"❌ OSM extraction failed: {e}")
+            logger.error(f"OSM extraction failed: {e}")
+            print(f"OSM extraction failed: {e}")
             raise
     
     def _extract_road_network(self, location: Tuple[float, float]) -> Dict[str, Any]:
         """Extract and analyze road network"""
         try:
+            print("   Extracting road network...")
             # Download road network
             graph = ox.graph_from_point(
                 location, 
@@ -93,7 +107,7 @@ class GeoRetailOSMExtractor:
             }
             
         except Exception as e:
-            logger.warning(f"Road network extraction failed: {e}")
+            print(f"   Warning: Road network extraction failed: {e}")
             return {
                 "graph": None, 
                 "nodes_count": 0, 
@@ -104,6 +118,8 @@ class GeoRetailOSMExtractor:
     
     def _extract_pois(self, location: Tuple[float, float]) -> List[Dict[str, Any]]:
         """Extract Points of Interest with retail focus"""
+        
+        print("   Extracting POIs...")
         
         # Enhanced POI categories for retail analysis
         poi_tags = {
@@ -154,13 +170,13 @@ class GeoRetailOSMExtractor:
                             continue
                             
             except Exception as e:
-                logger.warning(f"Failed to extract {tag_key} POIs: {e}")
+                print(f"   Warning: Failed to extract {tag_key} POIs: {e}")
                 continue
         
         # Remove duplicates based on coordinates
         unique_pois = self._deduplicate_pois(all_pois)
         
-        logger.info(f"Extracted {len(unique_pois)} unique POIs")
+        print(f"   Found {len(unique_pois)} unique POIs")
         return unique_pois
     
     def _process_poi_features(self, features: gpd.GeoDataFrame, 
@@ -201,7 +217,6 @@ class GeoRetailOSMExtractor:
                 pois.append(poi_data)
                 
             except Exception as e:
-                logger.warning(f"Failed to process POI {idx}: {e}")
                 continue
         
         return pois
@@ -238,6 +253,7 @@ class GeoRetailOSMExtractor:
     def _extract_buildings(self, location: Tuple[float, float]) -> Dict[str, Any]:
         """Extract and analyze building data"""
         try:
+            print("   Extracting buildings...")
             buildings = ox.features_from_point(
                 location,
                 tags={'building': True},
@@ -254,8 +270,11 @@ class GeoRetailOSMExtractor:
             total_area = 0
             if 'geometry' in buildings.columns:
                 # Project to meter-based CRS for area calculation
-                buildings_projected = buildings.to_crs('EPSG:3857')
-                total_area = buildings_projected.geometry.area.sum()
+                try:
+                    buildings_projected = buildings.to_crs('EPSG:3857')
+                    total_area = buildings_projected.geometry.area.sum()
+                except:
+                    total_area = 0
             
             # Calculate building density
             area_km2 = (self.radius_meters / 1000) ** 2 * 3.14159
@@ -269,12 +288,13 @@ class GeoRetailOSMExtractor:
             }
             
         except Exception as e:
-            logger.warning(f"Building extraction failed: {e}")
+            print(f"   Warning: Building extraction failed: {e}")
             return {"count": 0, "total_area": 0, "types": {}, "density": 0}
     
     def _extract_landuse(self, location: Tuple[float, float]) -> Dict[str, Any]:
         """Extract land use data"""
         try:
+            print("   Extracting landuse...")
             landuse = ox.features_from_point(
                 location,
                 tags={'landuse': True},
@@ -297,7 +317,7 @@ class GeoRetailOSMExtractor:
             }
             
         except Exception as e:
-            logger.warning(f"Landuse extraction failed: {e}")
+            print(f"   Warning: Landuse extraction failed: {e}")
             return {"types": {}, "commercial_ratio": 0}
     
     def _calculate_network_metrics(self, graph, edges_gdf) -> Dict[str, float]:
@@ -319,7 +339,6 @@ class GeoRetailOSMExtractor:
             return metrics
             
         except Exception as e:
-            logger.warning(f"Network metrics calculation failed: {e}")
             return {}
     
     def _calculate_spatial_metrics(self, road_network: Dict, pois: List, 

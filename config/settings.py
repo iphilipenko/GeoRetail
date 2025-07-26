@@ -1,4 +1,4 @@
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from pathlib import Path
 from typing import Optional
 
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     data_dir: Path = project_root / "data"
     
     # Neo4j Configuration
-    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_uri: str = "neo4j://127.0.0.1:7687"
     neo4j_user: str = "neo4j" 
     neo4j_password: str = "Nopassword"
     neo4j_database: str = "georetail"
