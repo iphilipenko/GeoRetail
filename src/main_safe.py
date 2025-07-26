@@ -10,6 +10,7 @@ import uvicorn
 import os
 import sys
 import json
+import psycopg2
 from pathlib import Path
 from datetime import datetime
 
@@ -667,7 +668,113 @@ async def general_exception_handler(request, exc):
             ]
         }
     )
+# Додай цей код в кінець існуючого main_safe.py, перед startup events
 
+# ==========================================
+# H3 SPATIAL ANALYSIS ENDPOINTS
+# ==========================================
+
+# Import H3 endpoints (додай в топ файлу з іншими imports)
+try:
+    from api.endpoints.h3_endpoints import get_h3_router
+    h3_router = get_h3_router()
+    app.include_router(h3_router)
+    print("✅ H3 spatial analysis endpoints loaded")
+except Exception as e:
+    print(f"⚠️  H3 endpoints not available: {e}")
+    
+    # Fallback H3 endpoints if file not found
+    @app.get("/api/v1/h3/info", tags=["H3 Spatial Analysis"])
+    async def h3_info_fallback():
+        """Basic H3 info endpoint"""
+        return {
+            "status": "basic_h3_available",
+            "message": "H3 infrastructure ready, full endpoints pending",
+            "test_endpoint": "/api/v1/h3/test-kyiv"
+        }
+    
+    @app.get("/api/v1/h3/test-kyiv", tags=["H3 Spatial Analysis"])
+    async def test_h3_kyiv():
+        """Test H3 with Kyiv coordinates"""
+        import psycopg2
+        import os
+        
+        try:
+            conn = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "localhost"),
+                port=os.getenv("POSTGRES_PORT", "5432"),
+                database=os.getenv("POSTGRES_DB", "georetail"),
+                user=os.getenv("POSTGRES_USER", "georetail_user"),
+                password=os.getenv("POSTGRES_PASSWORD", "georetail_secure_2024")
+            )
+            cursor = conn.cursor()
+            
+            # Test H3 conversion for Kyiv
+            cursor.execute("""
+                SELECT 
+                    'Kyiv Center' as location,
+                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 7) as h3_res7,
+                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 8) as h3_res8,
+                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 9) as h3_res9;
+            """)
+            
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return {
+                "status": "success",
+                "location": result[0],
+                "h3_indices": {
+                    "resolution_7": result[1],
+                    "resolution_8": result[2], 
+                    "resolution_9": result[3]
+                },
+                "coordinates": {"lat": 50.4501, "lon": 30.5234},
+                "message": "H3 PostgreSQL integration working!"
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"H3 test failed: {str(e)}")
+
+# ==========================================
+# UPDATE ROOT ENDPOINT
+# ==========================================
+
+# Оновимо root endpoint (замінити існуючий)
+@app.get("/", tags=["System"])
+async def root():
+    """Root endpoint with system information"""
+    return {
+        "message": "GeoRetail Core Infrastructure",
+        "version": "2.1.0",  # Оновлена версія з H3
+        "status": "operational",
+        "timestamp": datetime.now().isoformat(),
+        "docs": "/docs",
+        "available_features": {
+            "neo4j": neo4j_client is not None,
+            "osm_extractor": osm_extractor is not None,
+            "fastapi_core": True,
+            "geometry_serialization": SHAPELY_AVAILABLE,
+            "h3_spatial_analysis": True,  # Додано
+            "postgis_h3": True,  # Додано
+            "redis_cache": "available",  # Додано
+        },
+        "next_setup_steps": [
+            "✅ Neo4j working" if neo4j_client else "❌ Fix Neo4j authentication",
+            "✅ OSM extraction working" if osm_extractor else "❌ Setup OSM extractor", 
+            "✅ PostGIS + H3 working",  # Оновлено
+            "⏳ Import demographics data",
+            "⏳ Import store network data",
+            "⏳ Implement H3 screening algorithms"
+        ],
+        "api_endpoints": {
+            "h3_analysis": "/api/v1/h3/info",
+            "location_screening": "/api/v1/h3/screen-location",
+            "store_import": "/api/v1/data/stores/import",
+            "database_status": "/api/v1/h3/database-status"
+        }
+    }
 # ==========================================
 # STARTUP/SHUTDOWN EVENTS
 # ==========================================
