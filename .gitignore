@@ -41,3 +41,33 @@ backup_before_upgrade/
 *.parquet
 *.feather
 *.h5
+
+# Cache and temporary data
+data/osm_cache/
+data/cache/
+data/exports/
+data/imports/
+data/embeddings/
+data/demographics/
+data/traffic/
+data/stores/
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Development
+docker-compose.dev.yml
+dev.ps1
+Makefile
+
+# Docker
+docker/
+
+# Test data
+*.json
+!config/*.json
+!docker-compose.json
