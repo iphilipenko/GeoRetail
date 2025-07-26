@@ -12,3 +12,32 @@ data/models/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/models/.gitkeep
+# Core Infrastructure additions
+data/demographics/*
+data/stores/*
+data/traffic/*
+data/embeddings/*
+data/cache/*
+data/exports/*
+!data/*/.gitkeep
+
+# Docker
+docker/volumes/*
+!docker/volumes/.gitkeep
+
+# Logs
+logs/*.log
+logs/*/*.log
+
+# Backup
+backup_before_upgrade/
+
+# ML Models
+*.pkl
+*.joblib
+*.model
+
+# Large data files
+*.parquet
+*.feather
+*.h5
