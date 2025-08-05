@@ -1,0 +1,356 @@
+# Module 2 Configuration
+# Data Processing & Normalization Pipeline
+
+module:
+  name: "Module 2 - Data Processing"
+  version: "2.0.0"
+  description: "ETL pipeline for OSM data processing and normalization"
+
+# Database Configuration
+database:
+  connection:
+    host: "localhost"
+    port: 5432
+    database: "georetail"
+    user: "georetail_user"
+    password: "georetail_secure_2024"
+    schema: "osm_ukraine"
+  
+  pool:
+    min_size: 2
+    max_size: 10
+    timeout: 30
+    retry_attempts: 3
+  
+  batch:
+    size: 5000
+    commit_interval: 10000
+    use_copy: true  # Use COPY for bulk inserts
+
+# Processing Configuration  
+processing:
+  # Parallel processing
+  parallel:
+    enabled: true
+    workers: 4
+    chunk_size: 1000
+    queue_size: 10000
+  
+  # Memory management
+  memory:
+    max_usage_mb: 2048
+    gc_interval: 5000  # Run garbage collection every N records
+    
+  # Checkpointing
+  checkpoint:
+    enabled: true
+    interval: 10000
+    directory: "data/checkpoints"
+    
+  # Error handling
+  errors:
+    max_retries: 3
+    skip_on_error: true
+    log_errors: true
+    error_file: "logs/processing_errors.log"
+
+# Tag Parsing Configuration
+tag_parsing:
+  # Supported tag formats
+  formats:
+    - "json"
+    - "jsonb" 
+    - "nested_json"
+  
+  # Key fields to extract
+  priority_fields:
+    - "name"
+    - "name:uk"
+    - "brand"
+    - "shop"
+    - "amenity"
+    - "highway"
+    
+  # Address extraction
+  address_fields:
+    - "addr:housenumber"
+    - "addr:street"
+    - "addr:city"
+    - "addr:postcode"
+
+# Brand Matching Configuration
+brand_matching:
+  # Matching algorithms
+  algorithms:
+    exact:
+      enabled: true
+      priority: 1
+    
+    fuzzy:
+      enabled: true
+      priority: 2
+      threshold: 0.8
+      algorithm: "token_sort_ratio"  # fuzzywuzzy algorithm
+    
+    osm_tags:
+      enabled: true
+      priority: 3
+      fields: ["brand", "brand:wikidata", "brand:en"]
+    
+    keywords:
+      enabled: true
+      priority: 4
+      min_confidence: 0.6
+  
+  # Caching
+  cache:
+    enabled: true
+    backend: "memory"  # memory, redis
+    ttl_seconds: 3600
+    max_size: 10000
+  
+  # Quality control
+  quality:
+    min_confidence: 0.7
+    auto_approve_threshold: 0.9
+    manual_review_threshold: 0.5
+
+# Functional Classification
+functional_classification:
+  # POI groups and their influence weights
+  groups:
+    competitor:
+      description: "Direct retail competitors"
+      weight_range: [-1.0, -0.1]
+      
+    traffic_generator:
+      description: "Attracts customer traffic"
+      weight_range: [0.1, 1.0]
+      
+    accessibility:
+      description: "Improves location accessibility"
+      weight_range: [0.1, 0.8]
+      
+    residential_indicator:
+      description: "Indicates residential areas"
+      weight_range: [0.1, 0.5]
+      
+    neutral:
+      description: "No significant impact"
+      weight_range: [0.0, 0.0]
+
+# Quality Assessment
+quality_assessment:
+  # Components and weights
+  components:
+    completeness:
+      weight: 0.4
+      required_fields: ["name", "category"]
+      
+    consistency:
+      weight: 0.3
+      check_duplicates: true
+      
+    accuracy:
+      weight: 0.3
+      validate_coordinates: true
+  
+  # Thresholds
+  thresholds:
+    min_quality_score: 0.3
+    min_completeness: 0.5
+    reject_below: 0.2
+
+# H3 Spatial Indexing
+h3_indexing:
+  # Resolutions to calculate
+  resolutions: [7, 8, 9, 10]
+  
+  # Default resolution for analysis
+  default_resolution: 9
+  
+  # Hexagon analysis
+  analysis:
+    calculate_neighbors: true
+    neighbor_ring_size: 1
+    calculate_coverage: true  # For line/polygon features
+  
+  # Performance
+  performance:
+    batch_calculation: true
+    cache_geometries: true
+
+# Analytics Configuration
+analytics:
+  # Metrics to calculate
+  metrics:
+    enabled:
+      - "poi_density"
+      - "competition_intensity"
+      - "transport_accessibility"
+      - "market_saturation"
+      - "opportunity_score"
+    
+  # Incremental updates
+  incremental:
+    enabled: true
+    track_changes: true
+    update_neighbors: true
+    
+  # Aggregation levels
+  aggregation:
+    spatial:
+      - "h3_res_7"
+      - "h3_res_8"
+      - "h3_res_9"
+      - "h3_res_10"
+    temporal:
+      - "daily"
+      - "weekly"
+      - "monthly"
+
+# Logging Configuration
+logging:
+  # General settings
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # File logging
+  file:
+    enabled: true
+    path: "logs/module2_processing.log"
+    max_size_mb: 100
+    backup_count: 5
+    
+  # Console logging
+  console:
+    enabled: true
+    colored: true
+    
+  # Structured logging
+  structured:
+    enabled: true
+    format: "json"
+    include_context: true
+    
+  # Log categories
+  categories:
+    processing: "INFO"
+    database: "WARNING"
+    quality: "INFO"
+    performance: "DEBUG"
+
+# Performance Monitoring
+monitoring:
+  # Metrics collection
+  metrics:
+    enabled: true
+    interval_seconds: 60
+    export_format: "prometheus"
+    
+  # Performance profiling
+  profiling:
+    enabled: false
+    sample_rate: 0.1
+    output_dir: "logs/profiling"
+    
+  # Resource monitoring
+  resources:
+    track_memory: true
+    track_cpu: true
+    alert_thresholds:
+      memory_percent: 80
+      cpu_percent: 90
+
+# Data Sources
+data_sources:
+  # OSM raw data
+  osm_raw:
+    table: "osm_ukraine.osm_raw"
+    id_column: "id"
+    batch_column: "region_name"
+    
+  # Output tables
+  output:
+    poi_processed: "osm_ukraine.poi_processed"
+    h3_analytics: "osm_ukraine.h3_analytics_current"
+    changes: "osm_ukraine.h3_analytics_changes"
+
+# Region Processing Order
+regions:
+  priority:
+    - "Київська область"
+    - "Харківська область"
+    - "Дніпропетровська область"
+    - "Одеська область"
+    - "Львівська область"
+  
+  parallel_regions: 2
+  checkpoint_after_region: true
+
+# Validation Rules
+validation:
+  # Coordinate validation
+  coordinates:
+    ukraine_bbox:
+      min_lon: 22.0
+      max_lon: 40.0
+      min_lat: 44.0
+      max_lat: 53.0
+    reject_outside: true
+    
+  # Name validation
+  names:
+    min_length: 2
+    max_length: 200
+    reject_numbers_only: true
+    
+  # Brand validation  
+  brands:
+    min_confidence: 0.5
+    require_dictionary_match: false
+
+# Feature Flags
+features:
+  # Enable/disable specific features
+  brand_normalization: true
+  quality_scoring: true
+  h3_indexing: true
+  incremental_updates: true
+  competitor_analysis: true
+  
+  # Experimental features
+  experimental:
+    ml_brand_prediction: false
+    graph_embeddings: false
+    realtime_updates: false
+
+# Environment-specific overrides
+environments:
+  development:
+    database:
+      host: "localhost"
+    processing:
+      parallel:
+        workers: 2
+    logging:
+      level: "DEBUG"
+      
+  production:
+    database:
+      host: "${DB_HOST}"
+      password: "${DB_PASSWORD}"
+    processing:
+      parallel:
+        workers: 8
+    logging:
+      level: "WARNING"
+      
+  testing:
+    database:
+      database: "georetail_test"
+    processing:
+      parallel:
+        enabled: false
+    features:
+      incremental_updates: false
