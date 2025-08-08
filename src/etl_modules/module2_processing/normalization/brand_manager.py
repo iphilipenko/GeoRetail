@@ -5,7 +5,8 @@ Brand Manager
 
 import json
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+import uuid
+from typing import Dict, List, Optional, Set, Tuple, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -77,114 +78,116 @@ class BrandManager:
         try:
             custom_brands.update(self._load_brands_from_db())
         except Exception as e:
-            logger.warning(f"Не вдалося завантажити бренди з БД: {e}")
+            logger.warning(f"Не вдалось завантажити бренди з БД: {e}")
         
         return custom_brands
     
     def _load_brands_from_db(self) -> Dict[str, BrandInfo]:
-        """Завантажує кастомні бренди з БД"""
+        """Завантажує бренди з PostgreSQL"""
         brands = {}
         
-        with psycopg2.connect(self.db_connection_string) as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Перевіряємо чи існує таблиця
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'osm_ukraine' 
-                        AND table_name = 'custom_brands'
-                    );
-                """)
-                
-                if not cur.fetchone()['exists']:
-                    # Створюємо таблицю якщо не існує
-                    self._create_brands_table(conn)
-                    return brands
-                
-                # Завантажуємо бренди
-                cur.execute("""
-                    SELECT brand_id, canonical_name, synonyms, format, 
-                           influence_weight, functional_group, parent_company,
-                           osm_tags, created_at, updated_at, created_by
-                    FROM osm_ukraine.custom_brands
-                    WHERE is_active = true
-                """)
-                
-                for row in cur:
-                    brands[row['brand_id']] = BrandInfo(
-                        canonical_name=row['canonical_name'],
-                        synonyms=row['synonyms'] or [],
-                        format=row['format'],
-                        influence_weight=float(row['influence_weight']),
-                        functional_group=row['functional_group'],
-                        parent_company=row['parent_company'],
-                        osm_tags=row['osm_tags']
-                    )
-        
-        logger.info(f"Завантажено {len(brands)} кастомних брендів з БД")
+        try:
+            with psycopg2.connect(self.db_connection_string) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT brand_id, canonical_name, synonyms, format,
+                               influence_weight, functional_group, parent_company, osm_tags
+                        FROM osm_ukraine.custom_brands
+                        WHERE is_active = true
+                    """)
+                    
+                    for row in cur:
+                        brands[row['brand_id']] = BrandInfo(
+                            canonical_name=row['canonical_name'],
+                            synonyms=row['synonyms'] or [],
+                            format=row['format'],
+                            influence_weight=row['influence_weight'],
+                            functional_group=row['functional_group'],
+                            parent_company=row['parent_company'],
+                            osm_tags=row['osm_tags'] or []
+                        )
+                        
+            logger.info(f"Завантажено {len(brands)} брендів з БД")
+            
+        except Exception as e:
+            logger.error(f"Помилка завантаження брендів з БД: {e}")
+            
         return brands
     
-    def _create_brands_table(self, conn):
-        """Створює таблицю для кастомних брендів"""
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS osm_ukraine.custom_brands (
-                    brand_id VARCHAR(100) PRIMARY KEY,
-                    canonical_name VARCHAR(200) NOT NULL,
-                    synonyms TEXT[] DEFAULT '{}',
-                    format VARCHAR(100) NOT NULL,
-                    influence_weight DECIMAL(3,2) NOT NULL CHECK (influence_weight BETWEEN -1.0 AND 1.0),
-                    functional_group VARCHAR(50) NOT NULL,
-                    parent_company VARCHAR(200),
-                    osm_tags TEXT[],
+    def _create_brand_tables(self):
+        """Створює таблиці для управління брендами"""
+        try:
+            with psycopg2.connect(self.db_connection_string) as conn:
+                with conn.cursor() as cur:
+                    # Таблиця кастомних брендів
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS osm_ukraine.custom_brands (
+                            brand_id VARCHAR PRIMARY KEY,
+                            canonical_name VARCHAR NOT NULL,
+                            synonyms TEXT[],
+                            format VARCHAR,
+                            influence_weight FLOAT DEFAULT 0.0,
+                            functional_group VARCHAR DEFAULT 'neutral',
+                            parent_company VARCHAR,
+                            osm_tags TEXT[],
+                            active BOOLEAN DEFAULT true,
+                            created_at TIMESTAMP DEFAULT NOW(),
+                            created_by VARCHAR,
+                            updated_at TIMESTAMP DEFAULT NOW(),
+                            updated_by VARCHAR,
+                            source VARCHAR DEFAULT 'manual',
+                            source_candidate_id UUID,
+                            confidence_score FLOAT DEFAULT 1.0
+                        )
+                    """)
                     
-                    -- Metadata
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    created_by VARCHAR(100) DEFAULT 'system',
-                    updated_by VARCHAR(100),
-                    is_active BOOLEAN DEFAULT true,
-                    notes TEXT
-                );
-                
-                CREATE INDEX idx_custom_brands_active ON osm_ukraine.custom_brands(is_active);
-                CREATE INDEX idx_custom_brands_canonical ON osm_ukraine.custom_brands(canonical_name);
-            """)
-            
-            # Таблиця для кандидатів
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS osm_ukraine.brand_candidates (
-                    candidate_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name VARCHAR(200) NOT NULL,
-                    frequency INTEGER DEFAULT 1,
-                    first_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    locations TEXT[] DEFAULT '{}',
-                    categories TEXT[] DEFAULT '{}',
+                    # Таблиця кандидатів
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS osm_ukraine.brand_candidates (
+                            candidate_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                            name VARCHAR NOT NULL,
+                            frequency INT DEFAULT 1,
+                            first_seen TIMESTAMP DEFAULT NOW(),
+                            last_seen TIMESTAMP DEFAULT NOW(),
+                            locations TEXT[],
+                            categories TEXT[],
+                            status VARCHAR DEFAULT 'new',
+                            confidence_score FLOAT,
+                            suggested_canonical_name VARCHAR,
+                            suggested_functional_group VARCHAR,
+                            suggested_influence_weight FLOAT,
+                            suggested_format VARCHAR,
+                            recommendation_reason TEXT,
+                            reviewed_at TIMESTAMP,
+                            reviewed_by VARCHAR,
+                            approved_brand_id VARCHAR,
+                            batch_id UUID,
+                            processed_at TIMESTAMP,
+                            rejection_reason TEXT,
+                            created_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """)
                     
-                    -- Suggestions
-                    suggested_canonical_name VARCHAR(200),
-                    suggested_functional_group VARCHAR(50),
-                    suggested_influence_weight DECIMAL(3,2),
-                    confidence_score DECIMAL(3,2) DEFAULT 0.0,
+                    # Таблиця логів
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS osm_ukraine.brand_approval_log (
+                            log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                            batch_id UUID,
+                            action VARCHAR NOT NULL,
+                            filters_used JSONB,
+                            candidates_processed INT DEFAULT 0,
+                            candidates_approved INT DEFAULT 0,
+                            candidates_rejected INT DEFAULT 0,
+                            processed_by VARCHAR,
+                            processed_at TIMESTAMP DEFAULT NOW()
+                        )
+                    """)
                     
-                    -- Status
-                    status VARCHAR(20) DEFAULT 'new' CHECK (status IN ('new', 'reviewing', 'approved', 'rejected')),
-                    reviewed_at TIMESTAMP WITH TIME ZONE,
-                    reviewed_by VARCHAR(100),
-                    rejection_reason TEXT,
+                    conn.commit()
+                    logger.info("Створено таблиці для управління брендами")
                     
-                    -- Зв'язок з доданим брендом
-                    approved_brand_id VARCHAR(100) REFERENCES osm_ukraine.custom_brands(brand_id)
-                );
-                
-                CREATE INDEX idx_brand_candidates_name ON osm_ukraine.brand_candidates(name);
-                CREATE INDEX idx_brand_candidates_status ON osm_ukraine.brand_candidates(status);
-                CREATE INDEX idx_brand_candidates_frequency ON osm_ukraine.brand_candidates(frequency DESC);
-            """)
-            
-            conn.commit()
-            logger.info("Створено таблиці для управління брендами")
+        except Exception as e:
+            logger.error(f"Помилка створення таблиць: {e}")
     
     def add_brand(
         self,
@@ -310,131 +313,430 @@ class BrandManager:
         return self.brand_dict.find_brand_by_name(name)
     
     def _name_matches(self, name: str, brand_info: BrandInfo) -> bool:
-        """Перевіряє чи назва відповідає бренду"""
-        normalized_name = self._normalize_name(name)
+        """Перевіряє чи збігається назва з брендом"""
+        name_lower = name.lower().strip()
         
-        # Перевірка канонічної назви
-        if normalized_name == self._normalize_name(brand_info.canonical_name):
+        # Перевіряємо канонічну назву
+        if name_lower == brand_info.canonical_name.lower().strip():
             return True
         
-        # Перевірка синонімів
+        # Перевіряємо синоніми
         for synonym in brand_info.synonyms:
-            if normalized_name == self._normalize_name(synonym):
+            if name_lower == synonym.lower().strip():
                 return True
         
         return False
     
-    def _normalize_name(self, name: str) -> str:
-        """Нормалізує назву"""
-        if not name:
-            return ""
-        return name.lower().strip().replace("'", "").replace('"', '')
-    
-    def record_unknown_brand(
-        self, 
-        name: str, 
-        region: str,
-        category: Optional[str] = None,
-        osm_tags: Optional[Dict[str, str]] = None
-    ):
-        """Записує невідомий бренд як кандидата"""
-        if not name or len(name) < 3:
-            return
-        
-        # Нормалізуємо назву
-        normalized = name.strip()
-        
-        # Оновлюємо або створюємо кандидата
-        if normalized in self.brand_candidates:
-            candidate = self.brand_candidates[normalized]
-            candidate.frequency += 1
-            candidate.last_seen = datetime.now()
-            if region not in candidate.locations:
-                candidate.locations.append(region)
-            if category and category not in candidate.categories:
-                candidate.categories.add(category)
-        else:
-            candidate = BrandCandidate(
-                name=normalized,
+    def track_candidate(self, name: str, region: str, category: str):
+        """Відстежує кандидата на новий бренд"""
+        if name not in self.brand_candidates:
+            self.brand_candidates[name] = BrandCandidate(
+                name=name,
                 frequency=1,
                 first_seen=datetime.now(),
                 last_seen=datetime.now(),
                 locations=[region],
-                categories={category} if category else set()
+                categories={category}
             )
-            self.brand_candidates[normalized] = candidate
-            self.stats['candidates_found'] += 1
+        else:
+            candidate = self.brand_candidates[name]
+            candidate.frequency += 1
+            candidate.last_seen = datetime.now()
+            if region not in candidate.locations:
+                candidate.locations.append(region)
+            candidate.categories.add(category)
+        
+        self.stats['candidates_found'] += 1
         
         # Зберігаємо в БД якщо частота достатня
+        candidate = self.brand_candidates[name]
         if candidate.frequency >= 5:  # Поріг для збереження
             self._save_candidate_to_db(candidate)
     
     def _save_candidate_to_db(self, candidate: BrandCandidate):
-        """Зберігає кандидата в БД"""
+        """Зберігає кандидата в БД (ВИПРАВЛЕНА ВЕРСІЯ)"""
         try:
             with psycopg2.connect(self.db_connection_string) as conn:
                 with conn.cursor() as cur:
+                    # Спочатку перевіряємо чи існує
                     cur.execute("""
-                        INSERT INTO osm_ukraine.brand_candidates 
-                        (name, frequency, first_seen, last_seen, locations, categories)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (name) DO UPDATE SET
-                            frequency = EXCLUDED.frequency,
-                            last_seen = EXCLUDED.last_seen,
-                            locations = array_cat(brand_candidates.locations, EXCLUDED.locations),
-                            categories = array_cat(brand_candidates.categories, EXCLUDED.categories)
-                    """, (
-                        candidate.name,
-                        candidate.frequency,
-                        candidate.first_seen,
-                        candidate.last_seen,
-                        list(candidate.locations),
-                        list(candidate.categories)
-                    ))
+                        SELECT candidate_id, frequency 
+                        FROM osm_ukraine.brand_candidates 
+                        WHERE name = %s
+                    """, (candidate.name,))
+                    
+                    existing = cur.fetchone()
+                    
+                    if existing:
+                        # Оновлюємо існуючий запис
+                        cur.execute("""
+                            UPDATE osm_ukraine.brand_candidates 
+                            SET frequency = frequency + %s,
+                                last_seen = %s,
+                                locations = array_cat(locations, %s::text[]),
+                                categories = array_cat(categories, %s::text[])
+                            WHERE name = %s
+                        """, (
+                            candidate.frequency,
+                            candidate.last_seen,
+                            list(candidate.locations),
+                            list(candidate.categories),
+                            candidate.name
+                        ))
+                    else:
+                        # Створюємо новий запис
+                        cur.execute("""
+                            INSERT INTO osm_ukraine.brand_candidates 
+                            (name, frequency, first_seen, last_seen, locations, categories, status)
+                            VALUES (%s, %s, %s, %s, %s, %s, 'new')
+                        """, (
+                            candidate.name,
+                            candidate.frequency,
+                            candidate.first_seen,
+                            candidate.last_seen,
+                            list(candidate.locations),
+                            list(candidate.categories)
+                        ))
+                    
                     conn.commit()
         except Exception as e:
-            logger.error(f"Помилка збереження кандидата: {e}")
-    
-    def get_brand_candidates(self, min_frequency: int = 10) -> List[BrandCandidate]:
-        """Повертає кандидатів на нові бренди"""
+            logger.error(f"Помилка збереження кандидата {candidate.name}: {e}")
+
+    def get_candidates_for_review(
+        self, 
+        status: Optional[str] = None,
+        min_frequency: Optional[int] = None,
+        min_confidence: Optional[float] = None,
+        category: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Отримує кандидатів для review з різними фільтрами
+        
+        Args:
+            status: Фільтр по статусу ('new', 'recommended', 'reviewing')
+            min_frequency: Мінімальна частота появи
+            min_confidence: Мінімальна впевненість
+            category: Фільтр по категорії
+            limit: Максимальна кількість результатів
+        
+        Returns:
+            Список кандидатів з усіма полями
+        """
+        candidates = []
+        
+        try:
+            with psycopg2.connect(self.db_connection_string) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Будуємо динамічний запит
+                    query = """
+                        SELECT 
+                            candidate_id, name, frequency, 
+                            first_seen, last_seen,
+                            locations, categories,
+                            status, confidence_score,
+                            suggested_canonical_name,
+                            suggested_functional_group,
+                            suggested_influence_weight,
+                            suggested_format,
+                            recommendation_reason,
+                            reviewed_at, reviewed_by
+                        FROM osm_ukraine.brand_candidates
+                        WHERE 1=1
+                    """
+                    params = []
+                    
+                    if status:
+                        query += " AND status = %s"
+                        params.append(status)
+                    
+                    if min_frequency:
+                        query += " AND frequency >= %s"
+                        params.append(min_frequency)
+                    
+                    if min_confidence:
+                        query += " AND confidence_score >= %s"
+                        params.append(min_confidence)
+                    
+                    if category:
+                        query += " AND %s = ANY(categories)"
+                        params.append(category)
+                    
+                    query += " ORDER BY frequency DESC, confidence_score DESC NULLS LAST"
+                    
+                    if limit:
+                        query += " LIMIT %s"
+                        params.append(limit)
+                    
+                    cur.execute(query, params)
+                    
+                    for row in cur:
+                        candidates.append(dict(row))
+                        
+        except Exception as e:
+            logger.error(f"Помилка отримання кандидатів: {e}")
+        
+        return candidates
+
+    def batch_approve_candidates(
+        self,
+        filters: Dict[str, Any],
+        action: str = 'approve',
+        processed_by: str = 'system',
+        batch_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        Batch approval/rejection кандидатів
+        
+        Args:
+            filters: Фільтри для вибору кандидатів
+                - status: статус кандидата
+                - min_frequency: мінімальна частота
+                - min_confidence: мінімальна впевненість
+                - candidate_ids: список конкретних ID
+            action: 'approve' або 'reject'
+            processed_by: хто обробляє
+            batch_id: ID batch операції
+        
+        Returns:
+            Статистика обробки
+        """
+        if batch_id is None:
+            batch_id = str(uuid.uuid4())
+        
+        stats = {
+            'total_processed': 0,
+            'approved': 0,
+            'rejected': 0,
+            'errors': 0
+        }
+        
+        try:
+            # Отримуємо кандидатів за фільтрами
+            if 'candidate_ids' in filters:
+                candidates = self._get_candidates_by_ids(filters['candidate_ids'])
+            else:
+                candidates = self.get_candidates_for_review(**filters)
+            
+            logger.info(f"Знайдено {len(candidates)} кандидатів для {action}")
+            
+            with psycopg2.connect(self.db_connection_string) as conn:
+                for candidate in candidates:
+                    try:
+                        if action == 'approve':
+                            success = self._approve_single_candidate(
+                                conn, candidate, processed_by, batch_id
+                            )
+                            if success:
+                                stats['approved'] += 1
+                        elif action == 'reject':
+                            success = self._reject_single_candidate(
+                                conn, candidate, processed_by, batch_id
+                            )
+                            if success:
+                                stats['rejected'] += 1
+                        
+                        stats['total_processed'] += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Помилка обробки кандидата {candidate['name']}: {e}")
+                        stats['errors'] += 1
+                
+                # Логуємо batch операцію
+                self._log_batch_operation(conn, batch_id, action, filters, stats, processed_by)
+                
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"Помилка batch approval: {e}")
+        
+        return stats
+
+    def _approve_single_candidate(
+        self, 
+        conn, 
+        candidate: Dict[str, Any], 
+        processed_by: str,
+        batch_id: str
+    ) -> bool:
+        """Затверджує одного кандидата"""
+        try:
+            cur = conn.cursor()
+            
+            # Створюємо запис в custom_brands
+            brand_id = candidate['name'].lower().replace(' ', '_').replace("'", '')
+            
+            cur.execute("""
+                INSERT INTO osm_ukraine.custom_brands (
+                    brand_id, 
+                    canonical_name, 
+                    synonyms,
+                    format, 
+                    influence_weight, 
+                    functional_group,
+                    created_by,
+                    source,
+                    source_candidate_id,
+                    confidence_score
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, 'auto_approved', %s, %s
+                )
+                ON CONFLICT (brand_id) DO UPDATE SET
+                    updated_at = NOW(),
+                    updated_by = EXCLUDED.created_by
+            """, (
+                brand_id,
+                candidate.get('suggested_canonical_name') or candidate['name'],
+                [candidate['name']],  # Оригінальна назва як синонім
+                candidate.get('suggested_format', 'магазин'),
+                candidate.get('suggested_influence_weight', -0.5),
+                candidate.get('suggested_functional_group', 'competitor'),
+                processed_by,
+                candidate['candidate_id'],
+                candidate.get('confidence_score', 0.5)
+            ))
+            
+            # Оновлюємо статус кандидата
+            cur.execute("""
+                UPDATE osm_ukraine.brand_candidates
+                SET status = 'approved',
+                    reviewed_at = NOW(),
+                    reviewed_by = %s,
+                    approved_brand_id = %s,
+                    batch_id = %s,
+                    processed_at = NOW()
+                WHERE candidate_id = %s
+            """, (processed_by, brand_id, batch_id, candidate['candidate_id']))
+            
+            cur.close()
+            
+            logger.info(f"✅ Затверджено бренд: {candidate['name']} -> {brand_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Помилка затвердження {candidate['name']}: {e}")
+            return False
+
+    def _reject_single_candidate(
+        self, 
+        conn, 
+        candidate: Dict[str, Any], 
+        processed_by: str,
+        batch_id: str
+    ) -> bool:
+        """Відхиляє одного кандидата"""
+        try:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                UPDATE osm_ukraine.brand_candidates
+                SET status = 'rejected',
+                    reviewed_at = NOW(),
+                    reviewed_by = %s,
+                    batch_id = %s,
+                    processed_at = NOW(),
+                    rejection_reason = %s
+                WHERE candidate_id = %s
+            """, (
+                processed_by, 
+                batch_id,
+                candidate.get('rejection_reason', 'Rejected by batch processing'),
+                candidate['candidate_id']
+            ))
+            
+            cur.close()
+            
+            logger.info(f"❌ Відхилено кандидата: {candidate['name']}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Помилка відхилення {candidate['name']}: {e}")
+            return False
+
+    def _get_candidates_by_ids(self, candidate_ids: List[str]) -> List[Dict[str, Any]]:
+        """Отримує кандидатів за списком ID"""
         candidates = []
         
         try:
             with psycopg2.connect(self.db_connection_string) as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("""
-                        SELECT name, frequency, first_seen, last_seen, 
-                               locations, categories, confidence_score
-                        FROM osm_ukraine.brand_candidates
-                        WHERE frequency >= %s
-                        AND status = 'new'
-                        ORDER BY frequency DESC
-                    """, (min_frequency,))
+                        SELECT * FROM osm_ukraine.brand_candidates
+                        WHERE candidate_id = ANY(%s)
+                    """, (candidate_ids,))
                     
                     for row in cur:
-                        candidates.append(BrandCandidate(
-                            name=row['name'],
-                            frequency=row['frequency'],
-                            first_seen=row['first_seen'],
-                            last_seen=row['last_seen'],
-                            locations=row['locations'] or [],
-                            categories=set(row['categories'] or []),
-                            confidence_score=float(row['confidence_score'] or 0)
-                        ))
+                        candidates.append(dict(row))
+                        
         except Exception as e:
-            logger.error(f"Помилка отримання кандидатів: {e}")
+            logger.error(f"Помилка отримання кандидатів за ID: {e}")
         
         return candidates
+
+    def _log_batch_operation(
+        self, 
+        conn, 
+        batch_id: str, 
+        action: str, 
+        filters: Dict[str, Any], 
+        stats: Dict[str, int],
+        processed_by: str
+    ):
+        """Логує batch операцію"""
+        try:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                INSERT INTO osm_ukraine.brand_approval_log (
+                    batch_id, action, filters_used, 
+                    candidates_processed, candidates_approved, candidates_rejected,
+                    processed_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                batch_id,
+                action,
+                Json(filters),
+                stats['total_processed'],
+                stats.get('approved', 0),
+                stats.get('rejected', 0),
+                processed_by
+            ))
+            
+            cur.close()
+            
+        except Exception as e:
+            logger.error(f"Помилка логування batch операції: {e}")
+
+    def get_batch_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Отримує історію batch операцій"""
+        history = []
+        
+        try:
+            with psycopg2.connect(self.db_connection_string) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("""
+                        SELECT * FROM osm_ukraine.brand_approval_log
+                        ORDER BY processed_at DESC
+                        LIMIT %s
+                    """, (limit,))
+                    
+                    for row in cur:
+                        history.append(dict(row))
+                        
+        except Exception as e:
+            logger.error(f"Помилка отримання історії: {e}")
+        
+        return history
     
     def approve_candidate(
         self,
         candidate_name: str,
         brand_id: str,
         canonical_name: str,
-        synonyms: List[str],
-        format: str,
-        influence_weight: float,
-        functional_group: str,
+        synonyms: List[str] = None,
+        format: str = "магазин",
+        influence_weight: float = -0.5,
+        functional_group: str = "competitor",
         approved_by: str = "admin"
     ) -> bool:
         """Затверджує кандидата як новий бренд"""
@@ -503,22 +805,55 @@ if __name__ == "__main__":
     if success:
         print("✅ Бренд 'Піцца Дей' успішно додано!")
     
-    # Пошук бренду
+    # Демонстрація пошуку бренду
     result = manager.find_brand("Pizza Day")
     if result:
         brand_id, brand_info = result
         print(f"Знайдено: {brand_info.canonical_name} (вплив: {brand_info.influence_weight})")
     
-    # Перевірка кандидатів
-    candidates = manager.get_brand_candidates(min_frequency=5)
-    if candidates:
-        print(f"\n📋 Знайдено {len(candidates)} кандидатів на нові бренди:")
-        for candidate in candidates[:5]:
-            print(f"  - {candidate.name} (зустрічається {candidate.frequency} разів)")
+    # Демонстрація роботи з кандидатами
+    print("\n📋 Демонстрація batch operations:")
     
-    # Статистика
+    # Отримання кандидатів для review
+    candidates = manager.get_candidates_for_review(status='new', limit=5)
+    if candidates:
+        print(f"Знайдено {len(candidates)} нових кандидатів:")
+        for candidate in candidates:
+            print(f"  - {candidate['name']} (частота: {candidate['frequency']}, регіони: {len(candidate.get('locations', []))})")
+    
+    # Приклад batch approval
+    if candidates:
+        filters = {
+            'status': 'new',
+            'min_frequency': 10,
+            'min_confidence': 0.8
+        }
+        
+        stats = manager.batch_approve_candidates(
+            filters=filters,
+            action='approve',
+            processed_by='admin_demo'
+        )
+        
+        print(f"\n📊 Результат batch approval:")
+        print(f"  Оброблено: {stats['total_processed']}")
+        print(f"  Затверджено: {stats['approved']}")
+        print(f"  Відхилено: {stats['rejected']}")
+        print(f"  Помилки: {stats['errors']}")
+    
+    # Історія операцій
+    history = manager.get_batch_history(limit=3)
+    if history:
+        print(f"\n📚 Остання історія operations:")
+        for entry in history:
+            print(f"  - {entry['action']} at {entry['processed_at']} by {entry['processed_by']}")
+    
+    # Загальна статистика
     stats = manager.get_statistics()
-    print(f"\n📊 Статистика:")
+    print(f"\n📈 Статистика менеджера:")
     print(f"  Всього брендів: {stats['total_brands']}")
-    print(f"  Кастомних: {stats['custom_brands']}")
-    print(f"  Кандидатів: {stats['pending_candidates']}")
+    print(f"  Базових брендів: {stats['base_brands']}")
+    print(f"  Кастомних брендів: {stats['custom_brands']}")
+    print(f"  Кандидатів в очікуванні: {stats['pending_candidates']}")
+    print(f"  Додано брендів: {stats['brands_added']}")
+    print(f"  Знайдено кандидатів: {stats['candidates_found']}")

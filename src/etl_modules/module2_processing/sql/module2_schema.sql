@@ -249,21 +249,21 @@ CREATE INDEX idx_h3_changes_batch ON osm_ukraine.h3_analytics_changes(processing
 -- =================================================================
 
 -- Таблиця для H3 grid reference (опціонально)
-DROP TABLE IF EXISTS osm_ukraine.h3_grid CASCADE;
+-- DROP TABLE IF EXISTS osm_ukraine.h3_grid CASCADE;
 
-CREATE TABLE osm_ukraine.h3_grid (
-    h3_index VARCHAR(15) PRIMARY KEY,
-    resolution INTEGER NOT NULL CHECK (resolution BETWEEN 7 AND 10),
-    hex_geometry GEOMETRY(POLYGON, 4326) NOT NULL,
-    hex_center GEOMETRY(POINT, 4326) NOT NULL,
-    area_km2 DECIMAL(6,3),
-    parent_index VARCHAR(15),
-    children_indexes VARCHAR(15)[],
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+-- CREATE TABLE osm_ukraine.h3_grid (
+--    h3_index VARCHAR(15) PRIMARY KEY,
+--    resolution INTEGER NOT NULL CHECK (resolution BETWEEN 7 AND 10),
+--    hex_geometry GEOMETRY(POLYGON, 4326) NOT NULL,
+--    hex_center GEOMETRY(POINT, 4326) NOT NULL,
+--    area_km2 DECIMAL(6,3),
+--    parent_index VARCHAR(15),
+--    children_indexes VARCHAR(15)[],
+--    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+--);
 
-CREATE INDEX idx_h3_grid_resolution ON osm_ukraine.h3_grid(resolution);
-CREATE INDEX idx_h3_grid_geom ON osm_ukraine.h3_grid USING GIST(hex_geometry);
+--CREATE INDEX idx_h3_grid_resolution ON osm_ukraine.h3_grid(resolution);
+--CREATE INDEX idx_h3_grid_geom ON osm_ukraine.h3_grid USING GIST(hex_geometry);
 
 -- =================================================================
 -- 5. VIEWS ДЛЯ АНАЛІТИКИ
