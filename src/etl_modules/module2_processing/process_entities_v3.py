@@ -100,25 +100,24 @@ class EntityProcessorV3:
         try:
             # Вибираємо дані для обробки (розширений запит)
             base_query = """
-                SELECT id, osm_id, tags, name, brand, 
-                       ST_AsText(geom) as geom_wkt,
-                       ST_GeometryType(geom) as geom_type,
-                       h3_res_7, h3_res_8, h3_res_9, h3_res_10,
-                       region_name
-                FROM osm_ukraine.osm_raw
-                WHERE tags IS NOT NULL
+                SELECT 
+                    r.id, r.osm_id, r.tags, r.name, r.brand, 
+                    ST_AsText(r.geom) as geom_wkt,
+                    ST_GeometryType(r.geom) as geom_type,
+                    r.h3_res_7, r.h3_res_8, r.h3_res_9, r.h3_res_10,
+                    r.region_name
+                FROM osm_ukraine.osm_raw r
+                LEFT JOIN osm_ukraine.poi_processed p ON r.id = p.osm_raw_id
+                WHERE r.tags IS NOT NULL
                 AND (
-                    tags::text LIKE '%%shop%%' 
-                    OR tags::text LIKE '%%amenity%%'
-                    OR tags::text LIKE '%%highway%%'
-                    OR tags::text LIKE '%%public_transport%%'
-                    OR tags::text LIKE '%%railway%%'
-                    OR tags::text LIKE '%%brand%%'
+                    r.tags::text LIKE '%%shop%%' 
+                    OR r.tags::text LIKE '%%amenity%%'
+                    OR r.tags::text LIKE '%%highway%%'
+                    OR r.tags::text LIKE '%%public_transport%%'
+                    OR r.tags::text LIKE '%%railway%%'
+                    OR r.tags::text LIKE '%%brand%%'
                 )
-                AND id NOT IN (
-                    SELECT osm_raw_id FROM osm_ukraine.poi_processed 
-                    WHERE osm_raw_id IS NOT NULL
-                )
+                AND p.osm_raw_id IS NULL
             """
             
             if region:

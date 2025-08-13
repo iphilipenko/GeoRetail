@@ -13,6 +13,8 @@ import json
 import psycopg2
 from pathlib import Path
 from datetime import datetime
+from api.endpoints.h3_visualization import router as visualization_router
+
 
 # Shapely imports for geometry serialization
 try:
@@ -204,6 +206,9 @@ app.add_middleware(
 # ==========================================
 # SYSTEM ENDPOINTS
 # ==========================================
+
+# Додати після створення app, але перед @app.get("/") endpoints:
+app.include_router(visualization_router)
 
 @app.get("/", tags=["System"])
 async def root():
