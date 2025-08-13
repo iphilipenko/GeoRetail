@@ -1,7 +1,7 @@
 # src/api/endpoints/h3_visualization.py
 """
-H3 Visualization API для Київ MVP
-Розширення існуючого FastAPI сервера
+H3 Visualization API для Київська область MVP
+Повний, завершений файл для FastAPI backend
 """
 
 from fastapi import APIRouter, Query, HTTPException
@@ -13,16 +13,35 @@ import json
 from datetime import datetime
 import logging
 from contextlib import contextmanager
-# H3 library для генерації геометрій
+
+# H3 library для генерації геометрій - УНІВЕРСАЛЬНИЙ IMPORT
 try:
     import h3
     H3_AVAILABLE = True
-except ImportError:
+    
+    # Визначаємо версію H3 та доступні функції
+    h3_version = getattr(h3, '__version__', 'unknown')
+    h3_functions = [f for f in dir(h3) if not f.startswith('_')]
+    
+    print(f"✅ H3 imported successfully. Version: {h3_version}")
+    print(f"✅ Available functions: {len(h3_functions)} total")
+    
+    # Визначаємо які функції доступні (v3.x vs v4.x compatibility)
+    HAS_CELL_TO_LATLNG = hasattr(h3, 'cell_to_latlng')
+    HAS_CELL_TO_BOUNDARY = hasattr(h3, 'cell_to_boundary') 
+    HAS_H3_TO_GEO = hasattr(h3, 'h3_to_geo')
+    HAS_H3_TO_GEO_BOUNDARY = hasattr(h3, 'h3_to_geo_boundary')
+    
+    print(f"✅ Functions check: cell_to_latlng={HAS_CELL_TO_LATLNG}, h3_to_geo={HAS_H3_TO_GEO}")
+    
+except ImportError as e:
     h3 = None
     H3_AVAILABLE = False
-    print("⚠️ H3 library not available - geometry generation disabled")
-
-
+    HAS_CELL_TO_LATLNG = False
+    HAS_CELL_TO_BOUNDARY = False
+    HAS_H3_TO_GEO = False
+    HAS_H3_TO_GEO_BOUNDARY = False
+    print(f"⚠️ H3 library not available: {e}")
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +103,7 @@ def calculate_market_opportunity(
     Formula: (1 - Competition) * 0.5 + (Transport + Residential + Commercial) / 3 * 0.5
     """
     try:
-        # ВИПРАВЛЕНО: Конвертуємо Decimal в float
+        # ВИПРАВЛЕНО: Конвертуємо Decimal в float для PostgreSQL compatibility
         competition = float(competition or 0.0)
         transport = float(transport or 0.0)
         residential = float(residential or 0.0)
@@ -95,9 +114,6 @@ def calculate_market_opportunity(
         
         # Обмежуємо 0-1
         result = max(0.0, min(1.0, opportunity))
-        
-        # DEBUG: показуємо розрахунок
-        logger.info(f"Market opportunity: comp={competition}, trans={transport}, res={residential}, com={commercial} => {result}")
         
         return result
     except Exception as e:
@@ -125,41 +141,64 @@ def get_opportunity_category(score: float) -> str:
         return "low"        # ⚫ Сірий - low opportunity
 
 # =================================================================
-# H3 GEOMETRY GENERATION
+# H3 GEOMETRY GENERATION - УНІВЕРСАЛЬНА ПІДТРИМКА v3.x та v4.x
 # =================================================================
 
 def generate_h3_geometry(h3_index: str) -> Dict[str, Any]:
     """
-    Генерація GeoJSON геометрії з H3 індексу
-    Fallback якщо геометрії немає в h3_grid таблиці
+    УНІВЕРСАЛЬНА генерація GeoJSON геометрії з H3 індексу
+    Підтримує H3 v3.x та v4.x API
     """
     if not H3_AVAILABLE or h3 is None:
-        logger.warning("H3 library not available - using simple square geometry")
-        # Fallback - просто квадратна геометрія для візуалізації
+        logger.warning("H3 library not available - using fallback geometry")
         return {
             "type": "Polygon", 
             "coordinates": [[[30.5, 50.4], [30.51, 50.4], [30.51, 50.41], [30.5, 50.41], [30.5, 50.4]]]
         }
         
     try:
-        # ВИПРАВЛЕНО: правильні H3 v4.x функції
-        boundary = h3.cell_to_boundary(h3_index)
-        
-        # Конвертуємо в GeoJSON format (lon, lat)
-        geojson_coords = [[lon, lat] for lat, lon in boundary]
-        geojson_coords.append(geojson_coords[0])  # Замикаємо полігон
-        
-        return {
-            "type": "Polygon",
-            "coordinates": [geojson_coords]
-        }
+        # СПРОБУЄМО H3 v4.x API спочатку
+        if HAS_CELL_TO_BOUNDARY:
+            boundary = h3.cell_to_boundary(h3_index)
+            # Конвертуємо в GeoJSON format (lon, lat)
+            geojson_coords = [[lon, lat] for lat, lon in boundary]
+            geojson_coords.append(geojson_coords[0])  # Замикаємо полігон
+            
+            return {
+                "type": "Polygon",
+                "coordinates": [geojson_coords]
+            }
+            
+        # FALLBACK H3 v3.x API
+        elif HAS_H3_TO_GEO_BOUNDARY:
+            boundary = h3.h3_to_geo_boundary(h3_index)
+            # v3.x може повертати інший формат
+            geojson_coords = [[lon, lat] for lat, lon in boundary] 
+            geojson_coords.append(geojson_coords[0])
+            
+            return {
+                "type": "Polygon",
+                "coordinates": [geojson_coords]
+            }
+            
+        else:
+            logger.warning(f"No boundary function available in H3")
+            raise Exception("No boundary functions found")
+            
     except Exception as e:
         logger.warning(f"Failed to generate geometry for {h3_index}: {e}")
         
-        # DEBUG: спробуємо отримати центр принаймні
+        # СПРОБУЄМО отримати центр принаймні
         try:
-            lat, lon = h3.cell_to_latlng(h3_index)
+            if HAS_CELL_TO_LATLNG:
+                lat, lon = h3.cell_to_latlng(h3_index)
+            elif HAS_H3_TO_GEO:
+                lat, lon = h3.h3_to_geo(h3_index)
+            else:
+                raise Exception("No center functions available")
+                
             logger.info(f"H3 {h3_index} center: {lat}, {lon}")
+            
             # Створюємо маленький квадрат навколо центру
             offset = 0.001
             return {
@@ -172,9 +211,10 @@ def generate_h3_geometry(h3_index: str) -> Dict[str, Any]:
                     [lon - offset, lat - offset]
                 ]]
             }
+            
         except Exception as e2:
             logger.warning(f"Fallback center failed too: {e2}")
-            # Повний fallback
+            # Повний fallback - Київ координати
             return {
                 "type": "Polygon", 
                 "coordinates": [[[30.5, 50.4], [30.51, 50.4], [30.51, 50.41], [30.5, 50.41], [30.5, 50.4]]]
@@ -214,7 +254,7 @@ def get_db_connection():
 
 def get_kyiv_h3_data_with_fallback_geometry(
     resolution: int = 10,
-    limit: int = 1000
+    limit: int = 10000
 ) -> List[Dict]:
     """
     Отримання H3 даних для Києва БЕЗ JOIN з h3_grid
@@ -298,24 +338,24 @@ def get_kyiv_h3_visualization(
         description="H3 resolution level (7-10, higher = more detailed)"
     ),
     limit: int = Query(
-        50, 
+        10000, 
         ge=1, 
-        le=5000, 
+        le=100000, 
         description="Maximum number of hexagons to return"
     )
 ):
     """
-    🗺️ **Головний endpoint для MVP візуалізації Києва**
+    🗺️ **Головний endpoint для MVP візуалізації Київської області**
     
     Повертає H3 гексагони з метриками для інтерактивної карти:
     - **Competition Intensity**: Рівень конкуренції (0-100%)
     - **Market Opportunity**: Комбінована метрика можливостей
     
     **Auto-zoom logic**: 
-    - H3-7: City overview
+    - H3-7: Oblast overview
     - H3-8: District level  
-    - H3-9: Neighborhood level
-    - H3-10: Street level detail
+    - H3-9: City level
+    - H3-10: Neighborhood detail
     """
     
     try:
@@ -326,7 +366,7 @@ def get_kyiv_h3_visualization(
         if not raw_data:
             raise HTTPException(
                 status_code=404, 
-                detail=f"No H3 data found for Kyiv at resolution {resolution}"
+                detail=f"No H3 data found for Kyiv Oblast at resolution {resolution}"
             )
         
         # Обробляємо дані
@@ -403,39 +443,20 @@ def get_kyiv_h3_visualization(
         logger.error(f"Unexpected error in get_kyiv_h3_visualization: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/debug/h3-geometry")
-def debug_h3_geometry_test():
-    """🔍 Debug H3 geometry generation"""
-    
-    test_h3 = "8a11b618238ffff"
-    
-    result = {
-        "h3_available": H3_AVAILABLE,
-        "test_h3_index": test_h3,
-        "results": {}
+@router.get("/health")
+def visualization_health():
+    """Health check для visualization endpoints"""
+    return {
+        "status": "healthy",
+        "service": "h3_visualization",
+        "timestamp": datetime.now().isoformat(),
+        "available_metrics": ["competition", "opportunity"],
+        "supported_resolutions": [7, 8, 9, 10]
     }
-    
-    if H3_AVAILABLE and h3 is not None:
-        try:
-            # Тест center
-            center = h3.cell_to_latlng(test_h3)
-            result["results"]["center"] = center
-            
-            # Тест boundary  
-            boundary = h3.cell_to_boundary(test_h3)
-            result["results"]["boundary"] = boundary
-            
-            # Тест generate_h3_geometry
-            geometry = generate_h3_geometry(test_h3)
-            result["results"]["generated_geometry"] = geometry
-            
-        except Exception as e:
-            result["results"]["error"] = str(e)
-            
-    else:
-        result["results"]["error"] = "H3 not available"
-    
-    return result
+
+# =================================================================
+# DEBUG ENDPOINTS
+# =================================================================
 
 @router.get("/debug/kyiv-raw")
 def debug_kyiv_raw_data(resolution: int = Query(10, ge=7, le=10)):
@@ -493,17 +514,6 @@ def debug_kyiv_raw_data(resolution: int = Query(10, ge=7, le=10)):
                 "message": "Query failed - check database connection"
             }
         }
-
-@router.get("/health")
-def visualization_health():
-    """Health check для visualization endpoints"""
-    return {
-        "status": "healthy",
-        "service": "h3_visualization",
-        "timestamp": datetime.now().isoformat(),
-        "available_metrics": ["competition", "opportunity"],
-        "supported_resolutions": [7, 8, 9, 10]
-    }
 
 # =================================================================
 # INTEGRATION ТОЧКА
