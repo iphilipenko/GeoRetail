@@ -1,7 +1,7 @@
 # src/api/endpoints/h3_visualization.py
 """
 H3 Visualization API для Київська область MVP
-Повний, завершений файл для FastAPI backend
+Повний, завершений файл для FastAPI backend з ДИНАМІЧНИМИ H3 RESOLUTION
 """
 
 from fastapi import APIRouter, Query, HTTPException
@@ -249,23 +249,33 @@ def get_db_connection():
             conn.close()
 
 # =================================================================
-# DATABASE QUERIES
+# DATABASE QUERIES З ДИНАМІЧНИМИ H3 RESOLUTION
 # =================================================================
 
-def get_kyiv_h3_data_with_fallback_geometry(
+def get_kyiv_h3_data_with_dynamic_resolution(
     resolution: int = 10,
-    limit: int = 10000
+    limit: int = 100000
 ) -> List[Dict]:
     """
-    Отримання H3 даних для Києва БЕЗ JOIN з h3_grid
-    Геометрії генеруємо через H3 Python library
+    Отримання H3 даних для Києва з ДИНАМІЧНИМ вибором resolution
+    Підтримує H3-7, H3-8, H3-9, H3-10
     """
-    query = """
+    
+    # Динамічне визначення стовпця H3 на основі resolution
+    h3_column = f"h3_res_{resolution}"
+    
+    # Перевірка що resolution підтримується
+    supported_resolutions = [7, 8, 9, 10]
+    if resolution not in supported_resolutions:
+        raise ValueError(f"Resolution {resolution} not supported. Use one of: {supported_resolutions}")
+    
+    # ДИНАМІЧНИЙ SQL запит з підстановкою стовпця
+    query = f"""
     WITH kyiv_h3 AS (
-        SELECT DISTINCT h3_res_10
+        SELECT DISTINCT {h3_column} as h3_index
         FROM osm_ukraine.poi_processed 
         WHERE region_name = 'Kyiv' 
-          AND h3_res_10 IS NOT NULL
+          AND {h3_column} IS NOT NULL
         LIMIT %s
     )
     SELECT 
@@ -280,25 +290,43 @@ def get_kyiv_h3_data_with_fallback_geometry(
         COALESCE(h.retail_count, 0) as retail_count,
         COALESCE(h.competitor_count, 0) as competitor_count
     FROM osm_ukraine.h3_analytics_current h
-    JOIN kyiv_h3 k ON h.h3_index = k.h3_res_10
+    JOIN kyiv_h3 k ON h.h3_index = k.h3_index
     WHERE h.resolution = %s
     ORDER BY h.competition_intensity DESC NULLS LAST, h.poi_total_count DESC
     LIMIT %s;
     """
     
+    logger.info(f"🔍 Executing dynamic H3 query for resolution {resolution}")
+    logger.info(f"📊 Using column: {h3_column}, limit: {limit}")
+    
     with get_db_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query, (limit * 2, resolution, limit))
-            rows = cur.fetchall()
-            return [dict(row) for row in rows]
+            try:
+                # Параметри: (limit для CTE, resolution для WHERE, limit для LIMIT)
+                cur.execute(query, (limit * 2, resolution, limit))
+                rows = cur.fetchall()
+                
+                logger.info(f"✅ Found {len(rows)} records for H3-{resolution}")
+                return [dict(row) for row in rows]
+                
+            except Exception as e:
+                logger.error(f"❌ Query failed for resolution {resolution}: {e}")
+                logger.error(f"🔧 Using column: {h3_column}")
+                logger.error(f"🔧 SQL: {query}")
+                raise
 
-def get_data_bounds(resolution: int = 10) -> Dict[str, float]:
-    """Отримання мінімальних/максимальних значень для нормалізації"""
-    query = """
+def get_data_bounds_dynamic(resolution: int = 10) -> Dict[str, float]:
+    """Отримання мінімальних/максимальних значень для нормалізації з ДИНАМІЧНИМ resolution"""
+    
+    # Динамічне визначення стовпця H3
+    h3_column = f"h3_res_{resolution}"
+    
+    query = f"""
     WITH kyiv_h3 AS (
-        SELECT DISTINCT h3_res_10
+        SELECT DISTINCT {h3_column} as h3_index
         FROM osm_ukraine.poi_processed 
-        WHERE region_name = 'Kyiv' AND h3_res_10 IS NOT NULL
+        WHERE region_name = 'Kyiv' 
+          AND {h3_column} IS NOT NULL
     )
     SELECT 
         MIN(COALESCE(h.competition_intensity, 0)) as min_competition,
@@ -311,15 +339,20 @@ def get_data_bounds(resolution: int = 10) -> Dict[str, float]:
         MAX(COALESCE(h.commercial_activity_score, 0)) as max_commercial,
         COUNT(*) as total_count
     FROM osm_ukraine.h3_analytics_current h
-    JOIN kyiv_h3 k ON h.h3_index = k.h3_res_10
+    JOIN kyiv_h3 k ON h.h3_index = k.h3_index
     WHERE h.resolution = %s;
     """
+    
+    logger.info(f"📊 Getting data bounds for H3-{resolution} using {h3_column}")
     
     with get_db_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(query, (resolution,))
             row = cur.fetchone()
-            return dict(row) if row else {}
+            result = dict(row) if row else {}
+            
+            logger.info(f"✅ Data bounds for H3-{resolution}: {result.get('total_count', 0)} records")
+            return result
 
 # =================================================================
 # API ENDPOINTS
@@ -327,7 +360,7 @@ def get_data_bounds(resolution: int = 10) -> Dict[str, float]:
 
 @router.get("/kyiv-h3", response_model=H3VisualizationResponse)
 def get_kyiv_h3_visualization(
-    metric: Literal["competition", "opportunity"] = Query(
+    metric_type: Literal["competition", "opportunity"] = Query(
         "competition", 
         description="Metric to visualize: competition or opportunity"
     ),
@@ -338,10 +371,10 @@ def get_kyiv_h3_visualization(
         description="H3 resolution level (7-10, higher = more detailed)"
     ),
     limit: int = Query(
-        10000, 
+        100000, 
         ge=1, 
-        le=100000, 
-        description="Maximum number of hexagons to return"
+        le=1000000, 
+        description="Maximum number of hexagons to return (up to 1M)"
     )
 ):
     """
@@ -351,32 +384,39 @@ def get_kyiv_h3_visualization(
     - **Competition Intensity**: Рівень конкуренції (0-100%)
     - **Market Opportunity**: Комбінована метрика можливостей
     
-    **Auto-zoom logic**: 
-    - H3-7: Oblast overview
-    - H3-8: District level  
-    - H3-9: City level
-    - H3-10: Neighborhood detail
+    **Dynamic Auto-zoom logic**: 
+    - H3-7: Oblast overview (~5.16 км² per hexagon)
+    - H3-8: District level (~0.74 км² per hexagon)  
+    - H3-9: City level (~0.105 км² per hexagon)
+    - H3-10: Neighborhood detail (~0.015 км² per hexagon)
+    
+    **DYNAMIC RESOLUTION SUPPORT**: API automatically uses correct h3_res_X column
     """
     
     try:
-        # Отримуємо дані з бази (БЕЗ h3_grid JOIN)
-        raw_data = get_kyiv_h3_data_with_fallback_geometry(resolution, limit)
-        bounds = get_data_bounds(resolution)
+        logger.info(f"🚀 Starting H3 visualization request: metric={metric_type}, resolution={resolution}, limit={limit}")
+        
+        # Отримуємо дані з бази з ДИНАМІЧНИМ resolution
+        raw_data = get_kyiv_h3_data_with_dynamic_resolution(resolution, limit)
+        bounds = get_data_bounds_dynamic(resolution)
         
         if not raw_data:
             raise HTTPException(
                 status_code=404, 
-                detail=f"No H3 data found for Kyiv Oblast at resolution {resolution}"
+                detail=f"No H3 data found for Kyiv Oblast at resolution {resolution}. Check if h3_res_{resolution} column exists and has data."
             )
         
         # Обробляємо дані
         hexagons = []
+        geometry_errors = 0
+        
         for row in raw_data:
             try:
                 # Генеруємо геометрію через H3 Python library
                 geometry = generate_h3_geometry(row['h3_index'])
                 
                 if not geometry:
+                    geometry_errors += 1
                     logger.warning(f"Could not generate geometry for {row['h3_index']}")
                     continue
                 
@@ -389,7 +429,7 @@ def get_kyiv_h3_visualization(
                 )
                 
                 # Визначаємо display values based on selected metric
-                if metric == "competition":
+                if metric_type == "competition":
                     display_value = row['competition_intensity']
                     display_category = get_competition_category(display_value)
                 else:  # opportunity
@@ -415,18 +455,19 @@ def get_kyiv_h3_visualization(
                 hexagons.append(hexagon_data)
                 
             except Exception as e:
+                geometry_errors += 1
                 logger.warning(f"Error processing hexagon {row.get('h3_index', 'unknown')}: {e}")
                 continue
         
         if not hexagons:
             raise HTTPException(
                 status_code=404,
-                detail="No valid hexagon data could be processed"
+                detail=f"No valid hexagon data could be processed. Geometry errors: {geometry_errors}"
             )
         
         # Формуємо відповідь
         response = H3VisualizationResponse(
-            metric_type=metric,
+            metric_type=metric_type,
             resolution=resolution,
             total_hexagons=len(hexagons),
             data_bounds=bounds,
@@ -434,13 +475,19 @@ def get_kyiv_h3_visualization(
             generated_at=datetime.now()
         )
         
-        logger.info(f"Returned {len(hexagons)} hexagons for {metric} at resolution {resolution}")
+        logger.info(f"✅ SUCCESS: Returned {len(hexagons)} hexagons for {metric_type} at H3-{resolution}")
+        if geometry_errors > 0:
+            logger.warning(f"⚠️ Geometry errors: {geometry_errors} hexagons skipped")
+        
         return response
         
     except HTTPException:
         raise
+    except ValueError as e:
+        logger.error(f"❌ Validation error: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error in get_kyiv_h3_visualization: {e}")
+        logger.error(f"❌ Unexpected error in get_kyiv_h3_visualization: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/health")
@@ -448,10 +495,13 @@ def visualization_health():
     """Health check для visualization endpoints"""
     return {
         "status": "healthy",
-        "service": "h3_visualization",
+        "service": "h3_visualization_dynamic",
         "timestamp": datetime.now().isoformat(),
         "available_metrics": ["competition", "opportunity"],
-        "supported_resolutions": [7, 8, 9, 10]
+        "supported_resolutions": [7, 8, 9, 10],
+        "max_limit": 1000000,
+        "dynamic_resolution": True,
+        "h3_available": H3_AVAILABLE
     }
 
 # =================================================================
@@ -460,15 +510,17 @@ def visualization_health():
 
 @router.get("/debug/kyiv-raw")
 def debug_kyiv_raw_data(resolution: int = Query(10, ge=7, le=10)):
-    """🔍 Debug endpoint - повертає сирі дані без обробки геометрій"""
+    """🔍 Debug endpoint - повертає сирі дані без обробки геометрій з ДИНАМІЧНИМ resolution"""
     
-    # Простіший запит без JOIN з h3_grid
-    query = """
+    # Динамічне визначення стовпця H3
+    h3_column = f"h3_res_{resolution}"
+    
+    query = f"""
     WITH kyiv_h3 AS (
-        SELECT DISTINCT h3_res_10
+        SELECT DISTINCT {h3_column} as h3_index
         FROM osm_ukraine.poi_processed 
         WHERE region_name = 'Kyiv' 
-          AND h3_res_10 IS NOT NULL
+          AND {h3_column} IS NOT NULL
         LIMIT 20
     )
     SELECT 
@@ -482,13 +534,15 @@ def debug_kyiv_raw_data(resolution: int = Query(10, ge=7, le=10)):
         COALESCE(h.retail_count, 0) as retail_count,
         COALESCE(h.competitor_count, 0) as competitor_count
     FROM osm_ukraine.h3_analytics_current h
-    JOIN kyiv_h3 k ON h.h3_index = k.h3_res_10
+    JOIN kyiv_h3 k ON h.h3_index = k.h3_index
     WHERE h.resolution = %s
     ORDER BY h.competition_intensity DESC NULLS LAST
     LIMIT 10;
     """
     
     try:
+        logger.info(f"🔍 Debug query for H3-{resolution} using {h3_column}")
+        
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(query, (resolution,))
@@ -496,24 +550,76 @@ def debug_kyiv_raw_data(resolution: int = Query(10, ge=7, le=10)):
                 
                 return {
                     "resolution": resolution,
+                    "h3_column_used": h3_column,
                     "total_found": len(rows),
                     "data": [dict(row) for row in rows] if rows else [],
                     "debug_info": {
                         "query_executed": True,
-                        "message": "Raw data without geometry processing"
+                        "message": f"Dynamic query using {h3_column} for resolution {resolution}",
+                        "sql_snippet": f"FROM osm_ukraine.poi_processed WHERE {h3_column} IS NOT NULL"
                     }
                 }
                 
     except Exception as e:
-        logger.error(f"Debug query failed: {e}")
+        logger.error(f"❌ Debug query failed for resolution {resolution}: {e}")
         return {
             "error": str(e),
             "resolution": resolution,
+            "h3_column_used": h3_column,
             "debug_info": {
                 "query_executed": False,
-                "message": "Query failed - check database connection"
+                "message": f"Query failed for {h3_column} - check if column exists in poi_processed table",
+                "suggestion": f"Try: SELECT COUNT(*) FROM osm_ukraine.poi_processed WHERE {h3_column} IS NOT NULL;"
             }
         }
+
+@router.get("/debug/resolution-stats")
+def debug_resolution_stats():
+    """📊 Debug endpoint - статистика по всіх resolution рівнях"""
+    
+    stats = {}
+    
+    for resolution in [7, 8, 9, 10]:
+        h3_column = f"h3_res_{resolution}"
+        
+        query = f"""
+        SELECT 
+            COUNT(DISTINCT {h3_column}) as unique_h3_count,
+            COUNT(*) as total_records
+        FROM osm_ukraine.poi_processed 
+        WHERE region_name = 'Kyiv' 
+          AND {h3_column} IS NOT NULL;
+        """
+        
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(query)
+                    row = cur.fetchone()
+                    
+                    stats[f"h3_{resolution}"] = {
+                        "column": h3_column,
+                        "unique_hexagons": row['unique_h3_count'] if row else 0,
+                        "total_records": row['total_records'] if row else 0,
+                        "available": True
+                    }
+                    
+        except Exception as e:
+            stats[f"h3_{resolution}"] = {
+                "column": h3_column,
+                "error": str(e),
+                "available": False
+            }
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "region": "Kyiv",
+        "resolution_stats": stats,
+        "summary": {
+            "available_resolutions": [k for k, v in stats.items() if v.get('available', False)],
+            "total_available": sum(1 for v in stats.values() if v.get('available', False))
+        }
+    }
 
 # =================================================================
 # INTEGRATION ТОЧКА
