@@ -1,43 +1,130 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Map } from 'react-map-gl/maplibre';
 import { DeckGL } from '@deck.gl/react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { MapView } from '@deck.gl/core';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-// Hook for API data fetching
+// Custom hook for debouncing values
+const useDebounce = (value, delay) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+    
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [value, delay]);
+  
+  return debouncedValue;
+};
+
+// Helper function to determine optimal H3 resolution based on zoom
+const getOptimalResolution = (zoom) => {
+  if (zoom < 8) return 7;   // Найбільші гексагони (~5.16 км²) - Oblast overview
+  if (zoom < 10) return 8;  // Великі гексагони (~0.74 км²) - District level
+  if (zoom < 12) return 9;  // Середні гексагони (~0.105 км²) - City level
+  return 10;                // Найменші гексагони (~0.015 км²) - Neighborhood detail
+};
+
+// Helper function to get resolution description
+const getResolutionDescription = (resolution) => {
+  const descriptions = {
+    7: "Огляд області - великі гексагони",
+    8: "Рівень району - середні гексагони", 
+    9: "Рівень кварталу - детальні гексагони",
+    10: "Рівень вулиці - найдетальніші"
+  };
+  return descriptions[resolution] || "";
+};
+
+// Enhanced Hook for API data fetching with caching and fallback
 const useH3Data = (metric, resolution, limit) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
+  const [previousResolution, setPreviousResolution] = useState(resolution);
+  
+  // Simple in-memory cache
+  const cacheRef = useRef({});
+  
   useEffect(() => {
+    const cacheKey = `${metric}-${resolution}`;
+    
+    // Clear cache on first load to avoid old URLs
+    if (Object.keys(cacheRef.current).length === 0) {
+      console.log('🗑️ Clearing cache on component mount');
+      cacheRef.current = {};
+    }
+    
+    // Check cache first
+    if (cacheRef.current[cacheKey]) {
+      console.log('💾 Using cached data for:', cacheKey);
+      setData(cacheRef.current[cacheKey]);
+      setLoading(false);
+      setError(null);
+      setPreviousResolution(resolution);
+      return;
+    }
+    
+    // Fetch new data
     const fetchData = async () => {
       try {
         setLoading(true);
-        const response = await fetch(
-          `http://localhost:8000/api/v1/visualization/kyiv-h3?metric=${metric}&resolution=${resolution}&limit=${limit}`
-        );
+        const url = `http://localhost:8000/api/v1/visualization/kyiv-h3?metric_type=${metric}&resolution=${resolution}&limit=${limit}`;
+        console.log('🔍 Fetching H3 data from URL:', url);
+        console.log('📊 Parameters:', { metric_type: metric, resolution, limit });
+        
+        const response = await fetch(url);
+        
+        console.log('📡 Response status:', response.status);
+        console.log('📡 Response headers:', response.headers);
         
         if (!response.ok) {
-          throw new Error(`API Error: ${response.status}`);
+          const errorText = await response.text();
+          console.error('❌ API Error details:', errorText);
+          throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
         }
         
         const result = await response.json();
+        console.log('✅ API Response received:', { 
+          total_hexagons: result.total_hexagons, 
+          hexagons_count: result.hexagons?.length 
+        });
+        
+        // Store in cache
+        cacheRef.current[cacheKey] = result;
+        
         setData(result);
         setError(null);
+        setPreviousResolution(resolution);
       } catch (err) {
-        setError(err.message);
-        console.error('Failed to fetch H3 data:', err);
+        const errorMessage = err.message;
+        console.error('❌ Failed to fetch H3 data:', err);
+        console.error('🔧 Attempted URL:', `http://localhost:8000/api/v1/visualization/kyiv-h3?metric_type=${metric}&resolution=${resolution}&limit=${limit}`);
+        
+        // Try to fallback to previous resolution data if available
+        const fallbackKey = `${metric}-${previousResolution}`;
+        if (cacheRef.current[fallbackKey] && resolution !== previousResolution) {
+          console.log(`🔄 Falling back to resolution ${previousResolution}`);
+          setData(cacheRef.current[fallbackKey]);
+          setError(`Не вдалося завантажити H3-${resolution}, використовуємо H3-${previousResolution}`);
+        } else {
+          setData(null);
+          setError(errorMessage);
+        }
       } finally {
         setLoading(false);
       }
     };
 
     fetchData();
-  }, [metric, resolution, limit]);
+  }, [metric, resolution, limit, previousResolution]);
 
-  return { data, loading, error };
+  return { data, loading, error, actualResolution: previousResolution };
 };
 
 // Оптимізовані кольорові схеми з градієнтами
@@ -280,6 +367,175 @@ const MetricSwitcher = ({ currentMetric, onMetricChange }) => {
   );
 };
 
+// Resolution Control Component
+const ResolutionControl = ({ 
+  currentResolution, 
+  autoMode, 
+  onAutoModeChange,
+  onManualResolutionChange,
+  currentZoom,
+  loading,
+  error 
+}) => {
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '20px',
+      right: '20px',
+      backgroundColor: 'rgba(255, 255, 255, 0.98)',
+      padding: '15px',
+      borderRadius: '12px',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+      minWidth: '220px',
+      backdropFilter: 'blur(10px)',
+      zIndex: 1000
+    }}>
+      <h4 style={{ 
+        margin: '0 0 12px 0', 
+        fontSize: '16px', 
+        fontWeight: '600',
+        color: '#1a1a1a'
+      }}>
+        🎚️ Рівень деталізації H3
+      </h4>
+      
+      {/* Перемикач авто/ручний режим */}
+      <div style={{ marginBottom: '12px' }}>
+        <label style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          cursor: 'pointer',
+          fontSize: '14px'
+        }}>
+          <input 
+            type="checkbox" 
+            checked={autoMode}
+            onChange={(e) => onAutoModeChange(e.target.checked)}
+            style={{ marginRight: '8px' }}
+          />
+          <span>Автоматичний вибір при зумі</span>
+        </label>
+      </div>
+      
+      {/* Індикатор поточного resolution */}
+      <div style={{
+        padding: '10px',
+        backgroundColor: loading ? '#fff3e0' : error ? '#ffebee' : '#f0f8ff',
+        borderRadius: '6px',
+        marginBottom: '12px',
+        border: `1px solid ${loading ? '#ff9800' : error ? '#f44336' : '#2196f3'}`
+      }}>
+        <div style={{ 
+          fontSize: '12px', 
+          color: '#666', 
+          marginBottom: '4px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <span>Поточний рівень:</span>
+          {loading && (
+            <div style={{
+              width: '12px',
+              height: '12px',
+              border: '2px solid #ff9800',
+              borderTopColor: 'transparent',
+              borderRadius: '50%',
+              animation: 'spin 1s linear infinite'
+            }}></div>
+          )}
+        </div>
+        <div style={{ 
+          fontSize: '18px', 
+          fontWeight: 'bold', 
+          color: loading ? '#ff9800' : error ? '#f44336' : '#2196f3'
+        }}>
+          H3-{currentResolution}
+        </div>
+        <div style={{ 
+          fontSize: '11px', 
+          color: '#666', 
+          marginTop: '4px',
+          lineHeight: '1.3'
+        }}>
+          {getResolutionDescription(currentResolution)}
+        </div>
+        
+        {/* Повідомлення про помилку */}
+        {error && (
+          <div style={{
+            fontSize: '11px',
+            color: '#f44336',
+            marginTop: '6px',
+            padding: '4px',
+            backgroundColor: 'rgba(244, 67, 54, 0.1)',
+            borderRadius: '4px'
+          }}>
+            {error}
+          </div>
+        )}
+      </div>
+      
+      {/* Ручний вибір (якщо не авто) */}
+      {!autoMode && (
+        <div style={{ marginBottom: '12px' }}>
+          <label style={{ 
+            fontSize: '12px', 
+            color: '#666',
+            display: 'block',
+            marginBottom: '4px'
+          }}>
+            Виберіть рівень вручну:
+          </label>
+          <select 
+            value={currentResolution}
+            onChange={(e) => onManualResolutionChange(Number(e.target.value))}
+            style={{
+              width: '100%',
+              padding: '8px',
+              borderRadius: '6px',
+              border: '1px solid #ddd',
+              fontSize: '13px',
+              backgroundColor: 'white'
+            }}
+          >
+            <option value={7}>H3-7 (Область ~5 км²)</option>
+            <option value={8}>H3-8 (Район ~0.7 км²)</option>
+            <option value={9}>H3-9 (Квартал ~0.1 км²)</option>
+            <option value={10}>H3-10 (Вулиця ~0.015 км²)</option>
+          </select>
+        </div>
+      )}
+      
+      {/* Інфо про zoom */}
+      <div style={{
+        padding: '8px',
+        backgroundColor: '#f8f8f8',
+        borderRadius: '4px',
+        fontSize: '12px',
+        color: '#666',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center'
+      }}>
+        <span>🔍 Поточний zoom:</span>
+        <strong>{currentZoom.toFixed(1)}</strong>
+      </div>
+      
+      {autoMode && (
+        <div style={{
+          marginTop: '8px',
+          fontSize: '11px',
+          color: '#999',
+          fontStyle: 'italic'
+        }}>
+          Рівень автоматично змінюється при зумі карти
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Enhanced Tooltip Component
 const HoverTooltip = ({ hoveredObject, x, y }) => {
   if (!hoveredObject) return null;
@@ -460,8 +716,9 @@ const HoverTooltip = ({ hoveredObject, x, y }) => {
 // Main H3 Map Visualization Component
 const H3MapVisualization = () => {
   const [metric, setMetric] = useState('opportunity');
-  const [resolution, setResolution] = useState(10);
-  const [limit, setLimit] = useState(50000);
+  const [autoResolution, setAutoResolution] = useState(true); // Авто-режим включений за замовчуванням
+  const [manualResolution, setManualResolution] = useState(8); // Ручний вибір (початковий H3-8)
+  const [limit, setLimit] = useState(1000000); // Збільшено до 1 мільйона гексагонів
   const [hoveredObject, setHoveredObject] = useState(null);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [viewState, setViewState] = useState({
@@ -472,8 +729,16 @@ const H3MapVisualization = () => {
     bearing: 0
   });
 
-  // Fetch H3 data
-  const { data, loading, error } = useH3Data(metric, resolution, limit);
+  // Визначаємо поточний resolution на основі режиму
+  const currentResolution = autoResolution 
+    ? getOptimalResolution(viewState.zoom)
+    : manualResolution;
+  
+  // Використовуємо debounce для уникнення частих змін при зумі
+  const debouncedResolution = useDebounce(currentResolution, 300);
+  
+  // Fetch H3 data з новим resolution
+  const { data, loading, error, actualResolution } = useH3Data(metric, debouncedResolution, limit);
 
   // Process data for GeoJsonLayer
   const geoJsonData = useMemo(() => {
@@ -584,7 +849,7 @@ const H3MapVisualization = () => {
     })
   ], [geoJsonData, metric]);
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div style={{
         display: 'flex',
@@ -613,16 +878,11 @@ const H3MapVisualization = () => {
             Завантаження даних H3 для Київської області...
           </div>
         </div>
-        <style>{`
-          @keyframes spin {
-            to { transform: rotate(360deg); }
-          }
-        `}</style>
       </div>
     );
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <div style={{
         display: 'flex',
@@ -699,12 +959,56 @@ const H3MapVisualization = () => {
         onMetricChange={setMetric} 
       />
       
+      {/* Resolution Control */}
+      <ResolutionControl 
+        currentResolution={actualResolution}
+        autoMode={autoResolution}
+        onAutoModeChange={setAutoResolution}
+        onManualResolutionChange={setManualResolution}
+        currentZoom={viewState.zoom}
+        loading={loading}
+        error={error}
+      />
+      
       {/* Tooltip */}
       <HoverTooltip 
         hoveredObject={hoveredObject}
         x={mousePosition.x}
         y={mousePosition.y}
       />
+
+      {/* Loading Overlay при зміні resolution */}
+      {loading && data && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
+          color: 'white',
+          padding: '20px 30px',
+          borderRadius: '12px',
+          zIndex: 1001,
+          textAlign: 'center',
+          backdropFilter: 'blur(5px)'
+        }}>
+          <div style={{
+            width: '40px',
+            height: '40px',
+            border: '3px solid rgba(255,255,255,0.3)',
+            borderTopColor: 'white',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            margin: '0 auto 15px'
+          }}></div>
+          <div style={{ fontSize: '16px', fontWeight: '500' }}>
+            Завантаження H3-{debouncedResolution}...
+          </div>
+          <div style={{ fontSize: '13px', opacity: 0.8, marginTop: '5px' }}>
+            {getResolutionDescription(debouncedResolution)}
+          </div>
+        </div>
+      )}
 
       {/* Info Panel */}
       <div style={{
@@ -754,7 +1058,10 @@ const H3MapVisualization = () => {
             borderRadius: '6px'
           }}>
             <span>🔍 Роздільність H3:</span>
-            <strong style={{color: '#1a1a1a'}}>Рівень {resolution}</strong>
+            <strong style={{color: '#1a1a1a'}}>
+              Рівень {actualResolution}
+              {autoResolution && <span style={{fontSize: '11px', color: '#666'}}> (авто)</span>}
+            </strong>
           </div>
           
           <div style={{
@@ -771,6 +1078,13 @@ const H3MapVisualization = () => {
           </div>
         </div>
       </div>
+      
+      {/* CSS для анімації */}
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 };
