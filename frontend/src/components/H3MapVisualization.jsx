@@ -5,6 +5,12 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import { MapView } from '@deck.gl/core';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
+// Імпорт модульних компонентів
+import MetricSwitcher from './H3Visualization/components/controls/MetricSwitcher';
+import PreloadProgressBar from './H3Visualization/components/ui/PreloadProgressBar';
+import usePreloadedH3Data from './H3Visualization/hooks/usePreloadedH3Data';
+import { H3_COLOR_SCHEMES } from './H3Visualization/utils/colorSchemes';
+
 // Custom hook for debouncing values
 const useDebounce = (value, delay) => {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -41,330 +47,13 @@ const getResolutionDescription = (resolution) => {
   return descriptions[resolution] || "";
 };
 
-// Enhanced Hook for API data fetching with caching and fallback
-const useH3Data = (metric, resolution, limit) => {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [previousResolution, setPreviousResolution] = useState(resolution);
-  
-  // Simple in-memory cache
-  const cacheRef = useRef({});
-  
-  useEffect(() => {
-    const cacheKey = `${metric}-${resolution}`;
-    
-    // Clear cache on first load to avoid old URLs
-    if (Object.keys(cacheRef.current).length === 0) {
-      console.log('🗑️ Clearing cache on component mount');
-      cacheRef.current = {};
-    }
-    
-    // Check cache first
-    if (cacheRef.current[cacheKey]) {
-      console.log('💾 Using cached data for:', cacheKey);
-      setData(cacheRef.current[cacheKey]);
-      setLoading(false);
-      setError(null);
-      setPreviousResolution(resolution);
-      return;
-    }
-    
-    // Fetch new data
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const url = `http://localhost:8000/api/v1/visualization/kyiv-h3?metric_type=${metric}&resolution=${resolution}&limit=${limit}`;
-        console.log('🔍 Fetching H3 data from URL:', url);
-        console.log('📊 Parameters:', { metric_type: metric, resolution, limit });
-        
-        const response = await fetch(url);
-        
-        console.log('📡 Response status:', response.status);
-        console.log('📡 Response headers:', response.headers);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('❌ API Error details:', errorText);
-          throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
-        }
-        
-        const result = await response.json();
-        console.log('✅ API Response received:', { 
-          total_hexagons: result.total_hexagons, 
-          hexagons_count: result.hexagons?.length 
-        });
-        
-        // Store in cache
-        cacheRef.current[cacheKey] = result;
-        
-        setData(result);
-        setError(null);
-        setPreviousResolution(resolution);
-      } catch (err) {
-        const errorMessage = err.message;
-        console.error('❌ Failed to fetch H3 data:', err);
-        console.error('🔧 Attempted URL:', `http://localhost:8000/api/v1/visualization/kyiv-h3?metric_type=${metric}&resolution=${resolution}&limit=${limit}`);
-        
-        // Try to fallback to previous resolution data if available
-        const fallbackKey = `${metric}-${previousResolution}`;
-        if (cacheRef.current[fallbackKey] && resolution !== previousResolution) {
-          console.log(`🔄 Falling back to resolution ${previousResolution}`);
-          setData(cacheRef.current[fallbackKey]);
-          setError(`Не вдалося завантажити H3-${resolution}, використовуємо H3-${previousResolution}`);
-        } else {
-          setData(null);
-          setError(errorMessage);
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
+// СТАРИЙ hook useH3Data - ЗАМІЩЕНИЙ на preloaded систему
+// const useH3Data = (metric, resolution, limit) => { ... }
 
-    fetchData();
-  }, [metric, resolution, limit, previousResolution]);
-
-  return { data, loading, error, actualResolution: previousResolution };
-};
-
-// Оптимізовані кольорові схеми з градієнтами
-const COLOR_SCHEMES = {
-  competition: {
-    low: [46, 125, 50, 220],       // Темно-зелений (найкраще)
-    medium: [255, 193, 7, 220],    // Янтарний
-    high: [255, 111, 0, 220],      // Темно-оранжевий
-    maximum: [211, 47, 47, 220]    // Темно-червоний (найгірше)
-  },
-  opportunity: {
-    high: [103, 58, 183, 220],     // Глибокий фіолетовий (найкраще)
-    medium: [41, 121, 255, 220],   // Яскравий синій
-    low: [117, 117, 117, 180]      // Темно-сірий (найгірше)
-  }
-};
-
-// Metric Switcher Component - оновлений дизайн
-const MetricSwitcher = ({ currentMetric, onMetricChange }) => {
-  return (
-    <div style={{
-      position: 'absolute',
-      top: '20px',
-      left: '20px',
-      backgroundColor: 'rgba(255, 255, 255, 0.98)',
-      padding: '20px',
-      borderRadius: '12px',
-      boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
-      zIndex: 1000,
-      minWidth: '280px',
-      backdropFilter: 'blur(10px)'
-    }}>
-      <div className="metric-switcher-content">
-        <h3 style={{
-          margin: '0 0 15px 0',
-          fontSize: '18px',
-          fontWeight: '600',
-          color: '#1a1a1a'
-        }}>
-          📊 Вибір метрики
-        </h3>
-        
-        <div style={{display: 'flex', gap: '10px', marginBottom: '20px'}}>
-          <button 
-            style={{
-              flex: 1,
-              padding: '12px',
-              backgroundColor: currentMetric === 'competition' 
-                ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' 
-                : '#f5f5f5',
-              background: currentMetric === 'competition'
-                ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-                : '#f5f5f5',
-              color: currentMetric === 'competition' ? 'white' : '#666',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: '500',
-              transition: 'all 0.3s ease',
-              boxShadow: currentMetric === 'competition' 
-                ? '0 4px 15px rgba(102, 126, 234, 0.4)' 
-                : 'none'
-            }}
-            onClick={() => onMetricChange('competition')}
-            onMouseEnter={(e) => {
-              if (currentMetric !== 'competition') {
-                e.target.style.backgroundColor = '#e8e8e8';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (currentMetric !== 'competition') {
-                e.target.style.backgroundColor = '#f5f5f5';
-              }
-            }}
-          >
-            ⚔️ Конкуренція
-          </button>
-          
-          <button 
-            style={{
-              flex: 1,
-              padding: '12px',
-              backgroundColor: currentMetric === 'opportunity' 
-                ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
-                : '#f5f5f5',
-              background: currentMetric === 'opportunity'
-                ? 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
-                : '#f5f5f5',
-              color: currentMetric === 'opportunity' ? 'white' : '#666',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontWeight: '500',
-              transition: 'all 0.3s ease',
-              boxShadow: currentMetric === 'opportunity'
-                ? '0 4px 15px rgba(240, 147, 251, 0.4)'
-                : 'none'
-            }}
-            onClick={() => onMetricChange('opportunity')}
-            onMouseEnter={(e) => {
-              if (currentMetric !== 'opportunity') {
-                e.target.style.backgroundColor = '#e8e8e8';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (currentMetric !== 'opportunity') {
-                e.target.style.backgroundColor = '#f5f5f5';
-              }
-            }}
-          >
-            💡 Можливості
-          </button>
-        </div>
-        
-        <div style={{
-          backgroundColor: '#fafafa',
-          padding: '15px',
-          borderRadius: '8px',
-          border: '1px solid #e0e0e0'
-        }}>
-          <h4 style={{
-            margin: '0 0 10px 0',
-            fontSize: '14px',
-            fontWeight: '600',
-            color: '#555'
-          }}>
-            Легенда:
-          </h4>
-          
-          {currentMetric === 'competition' && (
-            <div>
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #2e7d32 0%, #4caf50 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Низька</strong> (0-20%) ✨ Найкраще
-                </span>
-              </div>
-              
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #ffc107 0%, #ffeb3b 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Середня</strong> (20-40%)
-                </span>
-              </div>
-              
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #ff6f00 0%, #ff9800 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Висока</strong> (40-60%)
-                </span>
-              </div>
-              
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #d32f2f 0%, #f44336 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Максимальна</strong> (60%+) ⛔
-                </span>
-              </div>
-            </div>
-          )}
-          
-          {currentMetric === 'opportunity' && (
-            <div>
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #673ab7 0%, #9c27b0 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Висока</strong> 🎯 Найкращі локації
-                </span>
-              </div>
-              
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #2979ff 0%, #448aff 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Середня</strong> - Хороший потенціал
-                </span>
-              </div>
-              
-              <div style={{display: 'flex', alignItems: 'center', margin: '6px 0'}}>
-                <div style={{
-                  width: '24px',
-                  height: '24px',
-                  background: 'linear-gradient(135deg, #757575 0%, #9e9e9e 100%)',
-                  borderRadius: '4px',
-                  marginRight: '10px',
-                  boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-                }}></div>
-                <span style={{fontSize: '13px', color: '#333'}}>
-                  <strong>Низька</strong> - Обмежений потенціал
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+// ОНОВЛЕНІ кольорові схеми (винесені в константи, тут тільки alpha логіка)
+const getColorWithDynamicAlpha = (scheme, category, alpha) => {
+  const baseColor = H3_COLOR_SCHEMES[scheme]?.[category] || [200, 200, 200];
+  return [baseColor[0], baseColor[1], baseColor[2], alpha];
 };
 
 // Resolution Control Component
@@ -713,12 +402,11 @@ const HoverTooltip = ({ hoveredObject, x, y }) => {
   );
 };
 
-// Main H3 Map Visualization Component
+// Main H3 Map Visualization Component з PRELOADING СИСТЕМОЮ
 const H3MapVisualization = () => {
   const [metric, setMetric] = useState('opportunity');
-  const [autoResolution, setAutoResolution] = useState(true); // Авто-режим включений за замовчуванням
-  const [manualResolution, setManualResolution] = useState(8); // Ручний вибір (початковий H3-8)
-  const [limit, setLimit] = useState(1000000); // Збільшено до 1 мільйона гексагонів
+  const [autoResolution, setAutoResolution] = useState(true);
+  const [manualResolution, setManualResolution] = useState(8);
   const [hoveredObject, setHoveredObject] = useState(null);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [viewState, setViewState] = useState({
@@ -729,44 +417,83 @@ const H3MapVisualization = () => {
     bearing: 0
   });
 
-  // Визначаємо поточний resolution на основі режиму
+  // 🚀 НОВИЙ PRELOADED H3 DATA SYSTEM
+  const {
+    isPreloaded,
+    overallProgress,
+    currentProgress,
+    completedRequests,
+    totalTasks,
+    preloadError,
+    currentStep,
+    getVisibleHexagons,
+    getCachedData,
+    getStats,
+    reloadData
+  } = usePreloadedH3Data(1000000);
+
+  // Визначаємо поточний resolution
   const currentResolution = autoResolution 
     ? getOptimalResolution(viewState.zoom)
     : manualResolution;
   
-  // Використовуємо debounce для уникнення частих змін при зумі
+  // Debounce для smooth зуму
   const debouncedResolution = useDebounce(currentResolution, 300);
-  
-  // Fetch H3 data з новим resolution
-  const { data, loading, error, actualResolution } = useH3Data(metric, debouncedResolution, limit);
+  const debouncedViewState = useDebounce(viewState, 150);
 
-  // Process data for GeoJsonLayer
+  // Статичний opacity для стабільності
+  const staticOpacity = 150;
+
+  // 🎯 VIEWPORT CULLING - отримуємо тільки видимі гексагони
+  const visibleHexagons = useMemo(() => {
+    if (!isPreloaded) return [];
+    
+    return getVisibleHexagons(metric, debouncedResolution, debouncedViewState);
+  }, [isPreloaded, metric, debouncedResolution, debouncedViewState, getVisibleHexagons]);
+
+  // Process data з viewport culling
   const geoJsonData = useMemo(() => {
-    if (!data?.hexagons) {
+    if (!visibleHexagons.length) {
       return { type: 'FeatureCollection', features: [] };
     }
     
-    const features = data.hexagons.map(hex => ({
-      type: 'Feature',
-      properties: {
-        ...hex,
-        color: COLOR_SCHEMES[metric][hex.display_category] || [200, 200, 200, 180]
-      },
-      geometry: hex.geometry
-    }));
+    const features = visibleHexagons.map(hex => {
+      const baseColor = H3_COLOR_SCHEMES[metric][hex.display_category] || [200, 200, 200];
+      const colorWithAlpha = [baseColor[0], baseColor[1], baseColor[2], staticOpacity];
+      
+      return {
+        type: 'Feature',
+        properties: {
+          ...hex,
+          color: colorWithAlpha
+        },
+        geometry: hex.geometry
+      };
+    });
     
     return {
       type: 'FeatureCollection',
       features
     };
-  }, [data, metric]);
+  }, [visibleHexagons, metric, staticOpacity]);
 
-  // Update viewport when data loads
+  // Статистика для debug і інформаційної панелі
+  const stats = useMemo(() => {
+    if (!isPreloaded) return { loadedDatasets: 0, totalHexagons: 0 };
+    
+    return getStats();
+  }, [isPreloaded, getStats]);
+
+  // Update viewport when first load (тільки один раз)
   useEffect(() => {
-    if (!data?.hexagons?.length) return;
+    if (!isPreloaded || visibleHexagons.length === 0) return;
+
+    // Встановлюємо viewport тільки при першому завантаженні
+    const hasSetInitialView = sessionStorage.getItem('h3-initial-view-set');
+    if (hasSetInitialView) return;
 
     try {
-      const allCoords = data.hexagons.flatMap(hex => 
+      const allCoords = visibleHexagons.flatMap(hex => 
         hex.geometry?.coordinates?.[0] || []
       ).filter(coord => coord && coord.length === 2);
 
@@ -783,29 +510,20 @@ const H3MapVisualization = () => {
       const centerLon = (minLon + maxLon) / 2;
       const centerLat = (minLat + maxLat) / 2;
       
-      const lonSpan = maxLon - minLon;
-      const latSpan = maxLat - minLat;
-      const maxSpan = Math.max(lonSpan, latSpan);
-      
-      let zoom = 10;
-      if (maxSpan > 2) zoom = 7;
-      else if (maxSpan > 1) zoom = 8;
-      else if (maxSpan > 0.5) zoom = 9;
-      else zoom = 10;
-      
-      setViewState({
+      setViewState(prev => ({
+        ...prev,
         longitude: centerLon,
         latitude: centerLat,
-        zoom: zoom,
-        pitch: 0,
-        bearing: 0
-      });
+        zoom: 8
+      }));
+      
+      sessionStorage.setItem('h3-initial-view-set', 'true');
     } catch (error) {
       console.error('Error calculating viewport:', error);
     }
-  }, [data]);
+  }, [isPreloaded, visibleHexagons.length]);
 
-  // Create deck.gl layers with enhanced styling
+  // Create deck.gl layers з viewport culling
   const layers = useMemo(() => [
     new GeoJsonLayer({
       id: 'h3-hexagons',
@@ -815,24 +533,19 @@ const H3MapVisualization = () => {
       filled: true,
       getFillColor: d => d.properties.color,
       
-      // Subtle outline
+      // Enhanced outline
       stroked: true,
       getLineColor: [255, 255, 255, 60],
       getLineWidth: 1,
       lineWidthMinPixels: 0.5,
       lineWidthMaxPixels: 1,
       
-      // Interaction
+      // Оптимізований interaction
       pickable: true,
       autoHighlight: true,
       highlightColor: [255, 255, 255, 100],
       
-      // Smooth transitions
-      transitions: {
-        getFillColor: 300
-      },
-      
-      // Events
+      // Простий hover
       onHover: (info) => {
         if (info.object) {
           setHoveredObject(info.object.properties);
@@ -842,92 +555,25 @@ const H3MapVisualization = () => {
         }
       },
       
-      // Update triggers
+      // Performance-oriented update triggers
       updateTriggers: {
         getFillColor: [metric]
       }
     })
   ], [geoJsonData, metric]);
 
-  if (loading && !data) {
+  // 🎨 ПОКАЗУЄМО PROGRESS BAR поки не завантажено
+  if (!isPreloaded) {
     return (
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        height: '100vh',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-      }}>
-        <div style={{
-          padding: '30px',
-          backgroundColor: 'white',
-          borderRadius: '12px',
-          boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
-          textAlign: 'center'
-        }}>
-          <div style={{
-            width: '50px',
-            height: '50px',
-            border: '3px solid #667eea',
-            borderTopColor: 'transparent',
-            borderRadius: '50%',
-            margin: '0 auto 20px',
-            animation: 'spin 1s linear infinite'
-          }}></div>
-          <div style={{fontSize: '18px', color: '#333'}}>
-            Завантаження даних H3 для Київської області...
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (error && !data) {
-    return (
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        height: '100vh',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-      }}>
-        <div style={{
-          padding: '30px',
-          backgroundColor: 'white',
-          borderRadius: '12px',
-          boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
-          maxWidth: '400px',
-          textAlign: 'center'
-        }}>
-          <div style={{
-            fontSize: '48px',
-            marginBottom: '20px'
-          }}>❌</div>
-          <div style={{
-            color: '#d32f2f',
-            marginBottom: '20px',
-            fontSize: '16px'
-          }}>
-            Помилка завантаження даних: {error}
-          </div>
-          <button 
-            onClick={() => window.location.reload()}
-            style={{
-              padding: '12px 30px',
-              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '16px',
-              fontWeight: '500',
-              boxShadow: '0 4px 15px rgba(102, 126, 234, 0.4)'
-            }}
-          >
-            🔄 Спробувати знову
-          </button>
-        </div>
-      </div>
+      <PreloadProgressBar
+        overallProgress={overallProgress}
+        currentProgress={currentProgress}
+        completedRequests={completedRequests}
+        totalTasks={totalTasks}
+        currentStep={currentStep}
+        error={preloadError}
+        onRetry={reloadData}
+      />
     );
   }
 
@@ -961,7 +607,7 @@ const H3MapVisualization = () => {
       
       {/* Resolution Control */}
       <ResolutionControl 
-        currentResolution={actualResolution}
+        currentResolution={debouncedResolution}
         autoMode={autoResolution}
         onAutoModeChange={setAutoResolution}
         onManualResolutionChange={setManualResolution}
@@ -1059,7 +705,7 @@ const H3MapVisualization = () => {
           }}>
             <span>🔍 Роздільність H3:</span>
             <strong style={{color: '#1a1a1a'}}>
-              Рівень {actualResolution}
+              Рівень {debouncedResolution}
               {autoResolution && <span style={{fontSize: '11px', color: '#666'}}> (авто)</span>}
             </strong>
           </div>
@@ -1076,6 +722,21 @@ const H3MapVisualization = () => {
               {metric === 'competition' ? 'Інтенсивність конкуренції' : 'Ринкові можливості'}
             </strong>
           </div>
+          
+          {/* Debug інформація - ТИМЧАСОВО ВІДКЛЮЧЕНО */}
+          {/* <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            padding: '8px 12px',
+            backgroundColor: '#f0f8ff',
+            borderRadius: '6px',
+            fontSize: '12px'
+          }}>
+            <span>👁️ Прозорість:</span>
+            <strong style={{color: '#2196f3'}}>
+              {debugInfo.baseOpacity} (zoom: {debugInfo.zoom.toFixed(1)})
+            </strong>
+          </div> */}
         </div>
       </div>
       
