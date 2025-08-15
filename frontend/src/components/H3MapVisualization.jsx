@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+// frontend/src/components/H3MapVisualization.jsx
+import React, { useState, useEffect, useMemo } from 'react';
 import { Map } from 'react-map-gl/maplibre';
 import { DeckGL } from '@deck.gl/react';
 import { GeoJsonLayer } from '@deck.gl/layers';
@@ -8,6 +9,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // Імпорт модульних компонентів
 import MetricSwitcher from './H3Visualization/components/controls/MetricSwitcher';
 import PreloadProgressBar from './H3Visualization/components/ui/PreloadProgressBar';
+import HoverTooltip from './H3Visualization/components/ui/HoverTooltip';
 import usePreloadedH3Data from './H3Visualization/hooks/usePreloadedH3Data';
 import { H3_COLOR_SCHEMES } from './H3Visualization/utils/colorSchemes';
 
@@ -30,10 +32,10 @@ const useDebounce = (value, delay) => {
 
 // Helper function to determine optimal H3 resolution based on zoom
 const getOptimalResolution = (zoom) => {
-  if (zoom < 8) return 7;   // Найбільші гексагони (~5.16 км²) - Oblast overview
-  if (zoom < 10) return 8;  // Великі гексагони (~0.74 км²) - District level
-  if (zoom < 12) return 9;  // Середні гексагони (~0.105 км²) - City level
-  return 10;                // Найменші гексагони (~0.015 км²) - Neighborhood detail
+  if (zoom < 8) return 7;
+  if (zoom < 10) return 8;
+  if (zoom < 12) return 9;
+  return 10;
 };
 
 // Helper function to get resolution description
@@ -45,15 +47,6 @@ const getResolutionDescription = (resolution) => {
     10: "Рівень вулиці - найдетальніші"
   };
   return descriptions[resolution] || "";
-};
-
-// СТАРИЙ hook useH3Data - ЗАМІЩЕНИЙ на preloaded систему
-// const useH3Data = (metric, resolution, limit) => { ... }
-
-// ОНОВЛЕНІ кольорові схеми (винесені в константи, тут тільки alpha логіка)
-const getColorWithDynamicAlpha = (scheme, category, alpha) => {
-  const baseColor = H3_COLOR_SCHEMES[scheme]?.[category] || [200, 200, 200];
-  return [baseColor[0], baseColor[1], baseColor[2], alpha];
 };
 
 // Resolution Control Component
@@ -88,7 +81,6 @@ const ResolutionControl = ({
         🎚️ Рівень деталізації H3
       </h4>
       
-      {/* Перемикач авто/ручний режим */}
       <div style={{ marginBottom: '12px' }}>
         <label style={{ 
           display: 'flex', 
@@ -106,7 +98,6 @@ const ResolutionControl = ({
         </label>
       </div>
       
-      {/* Індикатор поточного resolution */}
       <div style={{
         padding: '10px',
         backgroundColor: loading ? '#fff3e0' : error ? '#ffebee' : '#f0f8ff',
@@ -150,7 +141,6 @@ const ResolutionControl = ({
           {getResolutionDescription(currentResolution)}
         </div>
         
-        {/* Повідомлення про помилку */}
         {error && (
           <div style={{
             fontSize: '11px',
@@ -165,7 +155,6 @@ const ResolutionControl = ({
         )}
       </div>
       
-      {/* Ручний вибір (якщо не авто) */}
       {!autoMode && (
         <div style={{ marginBottom: '12px' }}>
           <label style={{ 
@@ -196,7 +185,6 @@ const ResolutionControl = ({
         </div>
       )}
       
-      {/* Інфо про zoom */}
       <div style={{
         padding: '8px',
         backgroundColor: '#f8f8f8',
@@ -225,184 +213,7 @@ const ResolutionControl = ({
   );
 };
 
-// Enhanced Tooltip Component
-const HoverTooltip = ({ hoveredObject, x, y }) => {
-  if (!hoveredObject) return null;
-
-  const { h3_index, competition_intensity, transport_accessibility_score, 
-          residential_indicator_score, commercial_activity_score, 
-          market_opportunity_score, poi_total_count, retail_count, 
-          competitor_count } = hoveredObject;
-
-  // Визначаємо колір оцінки можливостей
-  const getOpportunityColor = (score) => {
-    if (score >= 0.7) return '#4caf50';
-    if (score >= 0.4) return '#2196f3';
-    return '#f44336';
-  };
-
-  return (
-    <div 
-      style={{
-        position: 'absolute',
-        left: x + 15,
-        top: y + 15,
-        zIndex: 1000,
-        pointerEvents: 'none',
-        backgroundColor: 'rgba(33, 33, 33, 0.95)',
-        color: 'white',
-        padding: '16px',
-        borderRadius: '8px',
-        fontSize: '13px',
-        lineHeight: '1.5',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-        minWidth: '280px',
-        backdropFilter: 'blur(10px)',
-        border: '1px solid rgba(255,255,255,0.1)'
-      }}
-    >
-      <div style={{
-        borderBottom: '1px solid rgba(255,255,255,0.2)',
-        paddingBottom: '8px',
-        marginBottom: '10px'
-      }}>
-        <strong style={{fontSize: '14px'}}>
-          🔍 Гексагон: {h3_index ? h3_index.slice(-7) : 'unknown'}
-        </strong>
-      </div>
-      
-      <div style={{display: 'grid', gap: '6px'}}>
-        <div style={{display: 'flex', justifyContent: 'space-between'}}>
-          <span>🏪 Загальні POI:</span>
-          <strong>{poi_total_count || 0}</strong>
-        </div>
-        
-        <div style={{display: 'flex', justifyContent: 'space-between'}}>
-          <span>🛍️ Роздрібна торгівля:</span>
-          <strong>{retail_count || 0}</strong>
-        </div>
-        
-        <div style={{display: 'flex', justifyContent: 'space-between'}}>
-          <span>⚔️ Конкуренти:</span>
-          <strong style={{color: competitor_count > 5 ? '#ff9800' : '#4caf50'}}>
-            {competitor_count || 0}
-          </strong>
-        </div>
-        
-        <div style={{
-          margin: '8px 0',
-          padding: '8px 0',
-          borderTop: '1px solid rgba(255,255,255,0.2)',
-          borderBottom: '1px solid rgba(255,255,255,0.2)'
-        }}>
-          <div style={{marginBottom: '8px'}}>
-            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2px'}}>
-              <span>Конкуренція:</span>
-              <span>{((competition_intensity || 0) * 100).toFixed(0)}%</span>
-            </div>
-            <div style={{
-              height: '4px',
-              backgroundColor: 'rgba(255,255,255,0.1)',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${(competition_intensity || 0) * 100}%`,
-                height: '100%',
-                background: competition_intensity > 0.6 
-                  ? 'linear-gradient(90deg, #f44336, #ff6b6b)'
-                  : competition_intensity > 0.4
-                  ? 'linear-gradient(90deg, #ff9800, #ffb74d)'
-                  : 'linear-gradient(90deg, #4caf50, #81c784)',
-                transition: 'width 0.3s ease'
-              }}></div>
-            </div>
-          </div>
-          
-          <div style={{marginBottom: '8px'}}>
-            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2px'}}>
-              <span>Транспорт:</span>
-              <span>{((transport_accessibility_score || 0) * 100).toFixed(0)}%</span>
-            </div>
-            <div style={{
-              height: '4px',
-              backgroundColor: 'rgba(255,255,255,0.1)',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${(transport_accessibility_score || 0) * 100}%`,
-                height: '100%',
-                background: 'linear-gradient(90deg, #2196f3, #64b5f6)',
-                transition: 'width 0.3s ease'
-              }}></div>
-            </div>
-          </div>
-          
-          <div style={{marginBottom: '8px'}}>
-            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2px'}}>
-              <span>Житлова забудова:</span>
-              <span>{((residential_indicator_score || 0) * 100).toFixed(0)}%</span>
-            </div>
-            <div style={{
-              height: '4px',
-              backgroundColor: 'rgba(255,255,255,0.1)',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${(residential_indicator_score || 0) * 100}%`,
-                height: '100%',
-                background: 'linear-gradient(90deg, #9c27b0, #ba68c8)',
-                transition: 'width 0.3s ease'
-              }}></div>
-            </div>
-          </div>
-          
-          <div>
-            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '2px'}}>
-              <span>Комерційна активність:</span>
-              <span>{((commercial_activity_score || 0) * 100).toFixed(0)}%</span>
-            </div>
-            <div style={{
-              height: '4px',
-              backgroundColor: 'rgba(255,255,255,0.1)',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                width: `${(commercial_activity_score || 0) * 100}%`,
-                height: '100%',
-                background: 'linear-gradient(90deg, #ff5722, #ff8a65)',
-                transition: 'width 0.3s ease'
-              }}></div>
-            </div>
-          </div>
-        </div>
-        
-        <div style={{
-          backgroundColor: 'rgba(255,255,255,0.1)',
-          padding: '8px',
-          borderRadius: '4px',
-          textAlign: 'center'
-        }}>
-          <div style={{fontSize: '11px', opacity: 0.8, marginBottom: '4px'}}>
-            Оцінка можливостей
-          </div>
-          <div style={{
-            fontSize: '20px',
-            fontWeight: 'bold',
-            color: getOpportunityColor(market_opportunity_score || 0)
-          }}>
-            {(market_opportunity_score || 0).toFixed(2)}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Main H3 Map Visualization Component з PRELOADING СИСТЕМОЮ
+// Main H3 Map Visualization Component
 const H3MapVisualization = () => {
   const [metric, setMetric] = useState('opportunity');
   const [autoResolution, setAutoResolution] = useState(true);
@@ -412,12 +223,11 @@ const H3MapVisualization = () => {
   const [viewState, setViewState] = useState({
     longitude: 30.5234,
     latitude: 50.4501,
-    zoom: 9,
+    zoom: 8,
     pitch: 0,
     bearing: 0
   });
 
-  // 🚀 НОВИЙ PRELOADED H3 DATA SYSTEM
   const {
     isPreloaded,
     overallProgress,
@@ -427,39 +237,81 @@ const H3MapVisualization = () => {
     preloadError,
     currentStep,
     getVisibleHexagons,
-    getCachedData,
     getStats,
     reloadData
   } = usePreloadedH3Data(1000000);
 
-  // Визначаємо поточний resolution
+  const loading = !isPreloaded || (currentProgress > 0 && currentProgress < 100);
+  const error = preloadError;
+
+  const stats = useMemo(() => {
+    if (!isPreloaded) return { loadedDatasets: 0, totalHexagons: 0 };
+    return getStats();
+  }, [isPreloaded, getStats]);
+
   const currentResolution = autoResolution 
     ? getOptimalResolution(viewState.zoom)
     : manualResolution;
   
-  // Debounce для smooth зуму
   const debouncedResolution = useDebounce(currentResolution, 300);
   const debouncedViewState = useDebounce(viewState, 150);
 
-  // Статичний opacity для стабільності
-  const staticOpacity = 150;
-
-  // 🎯 VIEWPORT CULLING - отримуємо тільки видимі гексагони
+  // 🎯 VIEWPORT CULLING - отримуємо тільки видимі гексагони без обмеження
   const visibleHexagons = useMemo(() => {
     if (!isPreloaded) return [];
     
-    return getVisibleHexagons(metric, debouncedResolution, debouncedViewState);
+    // ВИПРАВЛЕННЯ: використовуємо широкий viewport або взагалі без viewport culling для початку
+    const allHexagons = getVisibleHexagons(metric, debouncedResolution, {
+      ...debouncedViewState,
+      // Розширюємо viewport для отримання більше даних
+      zoom: Math.max(6, debouncedViewState.zoom - 2)
+    });
+    
+    console.log(`🎯 Loaded hexagons for ${metric} H3-${debouncedResolution}:`, allHexagons.length);
+    return allHexagons;
   }, [isPreloaded, metric, debouncedResolution, debouncedViewState, getVisibleHexagons]);
 
-  // Process data з viewport culling
+  const data = useMemo(() => ({
+    total_hexagons: stats.totalHexagons || 0,
+    loaded_datasets: stats.loadedDatasets || 0,
+    hexagons: visibleHexagons || []
+  }), [stats.totalHexagons, stats.loadedDatasets, visibleHexagons]);
+
+  // 🎨 ВИПРАВЛЕННЯ КОЛЬОРІВ: правильна обробка кольорової схеми
   const geoJsonData = useMemo(() => {
     if (!visibleHexagons.length) {
       return { type: 'FeatureCollection', features: [] };
     }
     
+    console.log(`🎨 Processing ${visibleHexagons.length} hexagons for coloring`);
+    
     const features = visibleHexagons.map(hex => {
-      const baseColor = H3_COLOR_SCHEMES[metric][hex.display_category] || [200, 200, 200];
-      const colorWithAlpha = [baseColor[0], baseColor[1], baseColor[2], staticOpacity];
+      // ВИПРАВЛЕННЯ: правильна обробка кольорів
+      let baseColor;
+      const category = hex.display_category || 'low';
+      
+      if (H3_COLOR_SCHEMES && H3_COLOR_SCHEMES[metric] && H3_COLOR_SCHEMES[metric][category]) {
+        baseColor = H3_COLOR_SCHEMES[metric][category];
+      } else {
+        // Fallback кольори якщо схема не завантажена
+        const fallbackColors = {
+          opportunity: {
+            high: [76, 175, 80],    // Зелений
+            medium: [255, 193, 7],  // Жовтий  
+            low: [244, 67, 54]      // Червоний
+          },
+          competition: {
+            high: [244, 67, 54],    // Червоний
+            medium: [255, 152, 0],  // Помаранчевий
+            low: [76, 175, 80]      // Зелений
+          }
+        };
+        baseColor = fallbackColors[metric]?.[category] || [128, 128, 128];
+      }
+      
+      // Прозорість - робимо помітними
+      const alpha = 180; // Збільшуємо прозорість
+      const colorWithAlpha = [baseColor[0], baseColor[1], baseColor[2], alpha];
       
       return {
         type: 'Feature',
@@ -471,59 +323,78 @@ const H3MapVisualization = () => {
       };
     });
     
+    console.log(`🎨 Created ${features.length} colored features`);
     return {
       type: 'FeatureCollection',
       features
     };
-  }, [visibleHexagons, metric, staticOpacity]);
+  }, [visibleHexagons, metric]);
 
-  // Статистика для debug і інформаційної панелі
-  const stats = useMemo(() => {
-    if (!isPreloaded) return { loadedDatasets: 0, totalHexagons: 0 };
-    
-    return getStats();
-  }, [isPreloaded, getStats]);
-
-  // Update viewport when first load (тільки один раз)
+  // 🗺️ ВИПРАВЛЕННЯ VIEWPORT: спрощена логіка встановлення початкового viewport
   useEffect(() => {
     if (!isPreloaded || visibleHexagons.length === 0) return;
 
-    // Встановлюємо viewport тільки при першому завантаженні
-    const hasSetInitialView = sessionStorage.getItem('h3-initial-view-set');
+    // Встановлюємо viewport тільки один раз при першому завантаженні даних
+    const hasSetInitialView = sessionStorage.getItem('h3-map-initial-view');
     if (hasSetInitialView) return;
 
+    console.log(`🗺️ Setting initial viewport for ${visibleHexagons.length} hexagons`);
+
     try {
-      const allCoords = visibleHexagons.flatMap(hex => 
-        hex.geometry?.coordinates?.[0] || []
-      ).filter(coord => coord && coord.length === 2);
+      // Збираємо всі координати для обчислення bounds
+      const allCoords = [];
+      
+      visibleHexagons.forEach(hex => {
+        if (hex.geometry?.coordinates?.[0]) {
+          hex.geometry.coordinates[0].forEach(coord => {
+            if (Array.isArray(coord) && coord.length === 2) {
+              allCoords.push(coord);
+            }
+          });
+        }
+      });
 
-      if (allCoords.length === 0) return;
+      if (allCoords.length > 0) {
+        const lons = allCoords.map(c => c[0]);
+        const lats = allCoords.map(c => c[1]);
+        
+        const minLon = Math.min(...lons);
+        const maxLon = Math.max(...lons);
+        const minLat = Math.min(...lats);
+        const maxLat = Math.max(...lats);
+        
+        const centerLon = (minLon + maxLon) / 2;
+        const centerLat = (minLat + maxLat) / 2;
+        
+        // Обчислюємо zoom для покриття всієї області
+        const latRange = maxLat - minLat;
+        const lonRange = maxLon - minLon;
+        const maxRange = Math.max(latRange, lonRange);
+        
+        let zoom = 7;
+        if (maxRange < 0.1) zoom = 10;
+        else if (maxRange < 0.5) zoom = 9;
+        else if (maxRange < 1) zoom = 8;
+        else if (maxRange < 2) zoom = 7;
+        else zoom = 6;
 
-      const lons = allCoords.map(c => c[0]);
-      const lats = allCoords.map(c => c[1]);
-      
-      const minLon = Math.min(...lons);
-      const maxLon = Math.max(...lons);
-      const minLat = Math.min(...lats);
-      const maxLat = Math.max(...lats);
-      
-      const centerLon = (minLon + maxLon) / 2;
-      const centerLat = (minLat + maxLat) / 2;
-      
-      setViewState(prev => ({
-        ...prev,
-        longitude: centerLon,
-        latitude: centerLat,
-        zoom: 8
-      }));
-      
-      sessionStorage.setItem('h3-initial-view-set', 'true');
+        console.log(`🗺️ Calculated viewport: center=[${centerLon.toFixed(4)}, ${centerLat.toFixed(4)}], zoom=${zoom}`);
+        console.log(`🗺️ Data bounds: lon=[${minLon.toFixed(4)}, ${maxLon.toFixed(4)}], lat=[${minLat.toFixed(4)}, ${maxLat.toFixed(4)}]`);
+
+        setViewState(prev => ({
+          ...prev,
+          longitude: centerLon,
+          latitude: centerLat,
+          zoom: zoom
+        }));
+
+        sessionStorage.setItem('h3-map-initial-view', 'true');
+      }
     } catch (error) {
-      console.error('Error calculating viewport:', error);
+      console.error('Error setting viewport:', error);
     }
   }, [isPreloaded, visibleHexagons.length]);
 
-  // Create deck.gl layers з viewport culling
   const layers = useMemo(() => [
     new GeoJsonLayer({
       id: 'h3-hexagons',
@@ -535,17 +406,17 @@ const H3MapVisualization = () => {
       
       // Enhanced outline
       stroked: true,
-      getLineColor: [255, 255, 255, 60],
-      getLineWidth: 1,
-      lineWidthMinPixels: 0.5,
-      lineWidthMaxPixels: 1,
+      getLineColor: [255, 255, 255, 100], // Збільшуємо видимість контурів
+      getLineWidth: 2,
+      lineWidthMinPixels: 1,
+      lineWidthMaxPixels: 3,
       
-      // Оптимізований interaction
+      // Interaction
       pickable: true,
       autoHighlight: true,
-      highlightColor: [255, 255, 255, 100],
+      highlightColor: [255, 255, 255, 200],
       
-      // Простий hover
+      // Hover handler
       onHover: (info) => {
         if (info.object) {
           setHoveredObject(info.object.properties);
@@ -553,59 +424,113 @@ const H3MapVisualization = () => {
         } else {
           setHoveredObject(null);
         }
-      },
-      
-      // Performance-oriented update triggers
-      updateTriggers: {
-        getFillColor: [metric]
       }
     })
-  ], [geoJsonData, metric]);
+  ], [geoJsonData]);
 
-  // 🎨 ПОКАЗУЄМО PROGRESS BAR поки не завантажено
   if (!isPreloaded) {
     return (
-      <PreloadProgressBar
-        overallProgress={overallProgress}
-        currentProgress={currentProgress}
-        completedRequests={completedRequests}
-        totalTasks={totalTasks}
-        currentStep={currentStep}
-        error={preloadError}
-        onRetry={reloadData}
-      />
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        width: '100vw',
+        height: '100vh',
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        color: 'white',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif'
+      }}>
+        <PreloadProgressBar 
+          overallProgress={overallProgress}
+          currentProgress={currentProgress}
+          completedRequests={completedRequests}
+          totalTasks={totalTasks}
+          currentStep={currentStep}
+          error={error}
+          onRetry={reloadData}
+        />
+      </div>
+    );
+  }
+
+  if (error && !isPreloaded) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        width: '100vw',
+        height: '100vh',
+        background: 'linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%)',
+        color: 'white',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif',
+        textAlign: 'center',
+        padding: '2rem'
+      }}>
+        <div style={{
+          background: 'white',
+          color: '#d63031',
+          padding: '2rem 3rem',
+          borderRadius: '15px',
+          boxShadow: '0 20px 40px rgba(0,0,0,0.1)',
+          maxWidth: '500px'
+        }}>
+          <h1 style={{ margin: '0 0 1rem 0', fontSize: '1.5rem' }}>
+            🚨 Помилка завантаження
+          </h1>
+          <p style={{ margin: '0 0 1rem 0', fontSize: '1rem' }}>
+            {error}
+          </p>
+          <button 
+            onClick={reloadData}
+            style={{
+              background: '#d63031',
+              color: 'white',
+              border: 'none',
+              padding: '0.75rem 1.5rem',
+              borderRadius: '8px',
+              fontSize: '1rem',
+              cursor: 'pointer',
+              transition: 'background 0.2s'
+            }}
+          >
+            🔄 Спробувати знову
+          </button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <div style={{position: 'relative', width: '100%', height: '100vh'}}>
-      {/* DeckGL with Map */}
+    <div style={{
+      position: 'relative',
+      width: '100vw',
+      height: '100vh',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif'
+    }}>
       <DeckGL
-        viewState={viewState}
-        onViewStateChange={({viewState}) => setViewState(viewState)}
+        initialViewState={viewState}
+        onViewStateChange={({ viewState }) => setViewState(viewState)}
         controller={true}
         layers={layers}
-        parameters={{
-          blendFunc: [770, 771, 1, 771],
-          blendEquation: 32774,
-          depthTest: false
-        }}
+        views={new MapView({ id: 'map' })}
+        getCursor={() => 'crosshair'}
       >
         <Map
-          reuseMaps
+          id="map"
           mapStyle="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
           preventStyleDiffing={true}
-          attributionControl={false}
+          reuseMaps={true}
         />
       </DeckGL>
-      
-      {/* UI Elements */}
+
       <MetricSwitcher 
-        currentMetric={metric} 
-        onMetricChange={setMetric} 
+        currentMetric={metric}
+        onMetricChange={setMetric}
       />
-      
-      {/* Resolution Control */}
+
       <ResolutionControl 
         currentResolution={debouncedResolution}
         autoMode={autoResolution}
@@ -616,14 +541,12 @@ const H3MapVisualization = () => {
         error={error}
       />
       
-      {/* Tooltip */}
       <HoverTooltip 
         hoveredObject={hoveredObject}
         x={mousePosition.x}
         y={mousePosition.y}
       />
 
-      {/* Loading Overlay при зміні resolution */}
       {loading && data && (
         <div style={{
           position: 'absolute',
@@ -650,13 +573,12 @@ const H3MapVisualization = () => {
           <div style={{ fontSize: '16px', fontWeight: '500' }}>
             Завантаження H3-{debouncedResolution}...
           </div>
-          <div style={{ fontSize: '13px', opacity: 0.8, marginTop: '5px' }}>
+          <div style={{ fontSize: '13px', opacity: '0.8', marginTop: '5px' }}>
             {getResolutionDescription(debouncedResolution)}
           </div>
         </div>
       )}
 
-      {/* Info Panel */}
       <div style={{
         position: 'absolute',
         bottom: '20px',
@@ -723,24 +645,36 @@ const H3MapVisualization = () => {
             </strong>
           </div>
           
-          {/* Debug інформація - ТИМЧАСОВО ВІДКЛЮЧЕНО */}
-          {/* <div style={{
+          <div style={{
             display: 'flex',
             justifyContent: 'space-between',
             padding: '8px 12px',
             backgroundColor: '#f0f8ff',
-            borderRadius: '6px',
-            fontSize: '12px'
+            borderRadius: '6px'
           }}>
-            <span>👁️ Прозорість:</span>
+            <span>🔄 Прогрес завантаження:</span>
             <strong style={{color: '#2196f3'}}>
-              {debugInfo.baseOpacity} (zoom: {debugInfo.zoom.toFixed(1)})
+              {completedRequests}/{totalTasks} завершено
             </strong>
-          </div> */}
+          </div>
+          
+          {stats.loadedDatasets > 0 && (
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              padding: '8px 12px',
+              backgroundColor: '#e8f5e8',
+              borderRadius: '6px'
+            }}>
+              <span>💾 Завантажених датасетів:</span>
+              <strong style={{color: '#4caf50'}}>
+                {stats.loadedDatasets}
+              </strong>
+            </div>
+          )}
         </div>
       </div>
       
-      {/* CSS для анімації */}
       <style>{`
         @keyframes spin {
           to { transform: rotate(360deg); }
