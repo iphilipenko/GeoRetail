@@ -32,6 +32,7 @@ sys.path.append(str(src_path))
 # Import modules with safe fallbacks
 neo4j_client = None
 osm_extractor = None
+H3_ENDPOINTS_AVAILABLE = False  # Додано
 
 try:
     # Try to import existing modules
@@ -177,7 +178,38 @@ def safe_serialize_data(data, max_items=5):
         }
 
 # ==========================================
-# FASTAPI APPLICATION
+# H3 SPATIAL ANALYSIS ENDPOINTS 
+# ==========================================
+
+# Import H3 endpoints
+try:
+    print("🔍 Attempting to import h3_modal_endpoints...")
+    from api.endpoints.h3_modal_endpoints import router as h3_modal_router
+    print("✅ h3_modal_endpoints imported successfully")
+    
+    print("🔍 Attempting to import test_database_endpoint...")
+    from api.endpoints.test_database_endpoint import router as test_db_router
+    print("✅ test_database_endpoint imported successfully")
+    
+    H3_ENDPOINTS_AVAILABLE = True
+    print("✅ H3 Modal endpoints loaded successfully")
+except ImportError as import_error:
+    print(f"❌ ImportError in H3 endpoints: {import_error}")
+    print(f"   Import path issue: {import_error}")
+    H3_ENDPOINTS_AVAILABLE = False
+    h3_modal_router = None
+    test_db_router = None
+except Exception as e:
+    print(f"❌ General error in H3 endpoints: {e}")
+    print(f"   Error type: {type(e).__name__}")
+    import traceback
+    print(f"   Traceback: {traceback.format_exc()}")
+    H3_ENDPOINTS_AVAILABLE = False
+    h3_modal_router = None
+    test_db_router = None
+
+# ==========================================
+# FASTAPI APPLICATION 
 # ==========================================
 
 app = FastAPI(
@@ -207,15 +239,21 @@ app.add_middleware(
 # SYSTEM ENDPOINTS
 # ==========================================
 
-# Додати після створення app, але перед @app.get("/") endpoints:
+# Register routers
 app.include_router(visualization_router)
+
+# Register H3 Modal endpoints
+if H3_ENDPOINTS_AVAILABLE:
+    app.include_router(h3_modal_router)
+    app.include_router(test_db_router)
+    print("✅ H3 Modal and Database test endpoints registered")
 
 @app.get("/", tags=["System"])
 async def root():
     """Root endpoint with system information"""
     return {
         "message": "GeoRetail Core Infrastructure",
-        "version": "2.0.1",
+        "version": "2.1.0",  # Оновлена версія з H3
         "status": "operational",
         "timestamp": datetime.now().isoformat(),
         "docs": "/docs",
@@ -224,16 +262,26 @@ async def root():
             "osm_extractor": osm_extractor is not None,
             "fastapi_core": True,
             "geometry_serialization": SHAPELY_AVAILABLE,
-            "h3_processing": "pending_setup",
-            "postgis": "pending_setup"
+            "h3_modal_api": H3_ENDPOINTS_AVAILABLE,  # Додано
+            "database_integration": H3_ENDPOINTS_AVAILABLE,  # Додано
+            "spatial_analysis": H3_ENDPOINTS_AVAILABLE,  # Додано
         },
         "next_setup_steps": [
             "✅ Neo4j working" if neo4j_client else "❌ Fix Neo4j authentication",
             "✅ OSM extraction working" if osm_extractor else "❌ Setup OSM extractor",
-            "⏳ Setup PostGIS + H3",
+            "✅ H3 Modal API working" if H3_ENDPOINTS_AVAILABLE else "❌ Setup H3 endpoints",
+            "⏳ Connect to PostgreSQL database",
             "⏳ Import demographics data",
-            "⏳ Implement H3 screening"
-        ]
+            "⏳ Import store network data"
+        ],
+        "api_endpoints": {
+            "h3_modal": "/api/v1/hexagon-details/",
+            "database_test": "/api/v1/database/test-connection",
+            "coverage_calculator": "/api/v1/hexagon-details/coverage-calculator",
+            "visualization": "/api/v1/visualization/",
+            "osm_extraction": "/osm/extract/summary",
+            "neo4j_test": "/neo4j/test"
+        }
     }
 
 @app.get("/health", tags=["System"])
@@ -673,113 +721,6 @@ async def general_exception_handler(request, exc):
             ]
         }
     )
-# Додай цей код в кінець існуючого main_safe.py, перед startup events
-
-# ==========================================
-# H3 SPATIAL ANALYSIS ENDPOINTS
-# ==========================================
-
-# Import H3 endpoints (додай в топ файлу з іншими imports)
-try:
-    from api.endpoints.h3_endpoints import get_h3_router
-    h3_router = get_h3_router()
-    app.include_router(h3_router)
-    print("✅ H3 spatial analysis endpoints loaded")
-except Exception as e:
-    print(f"⚠️  H3 endpoints not available: {e}")
-    
-    # Fallback H3 endpoints if file not found
-    @app.get("/api/v1/h3/info", tags=["H3 Spatial Analysis"])
-    async def h3_info_fallback():
-        """Basic H3 info endpoint"""
-        return {
-            "status": "basic_h3_available",
-            "message": "H3 infrastructure ready, full endpoints pending",
-            "test_endpoint": "/api/v1/h3/test-kyiv"
-        }
-    
-    @app.get("/api/v1/h3/test-kyiv", tags=["H3 Spatial Analysis"])
-    async def test_h3_kyiv():
-        """Test H3 with Kyiv coordinates"""
-        import psycopg2
-        import os
-        
-        try:
-            conn = psycopg2.connect(
-                host=os.getenv("POSTGRES_HOST", "localhost"),
-                port=os.getenv("POSTGRES_PORT", "5432"),
-                database=os.getenv("POSTGRES_DB", "georetail"),
-                user=os.getenv("POSTGRES_USER", "georetail_user"),
-                password=os.getenv("POSTGRES_PASSWORD", "georetail_secure_2024")
-            )
-            cursor = conn.cursor()
-            
-            # Test H3 conversion for Kyiv
-            cursor.execute("""
-                SELECT 
-                    'Kyiv Center' as location,
-                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 7) as h3_res7,
-                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 8) as h3_res8,
-                    h3_lat_lng_to_cell(POINT(30.5234, 50.4501), 9) as h3_res9;
-            """)
-            
-            result = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            return {
-                "status": "success",
-                "location": result[0],
-                "h3_indices": {
-                    "resolution_7": result[1],
-                    "resolution_8": result[2], 
-                    "resolution_9": result[3]
-                },
-                "coordinates": {"lat": 50.4501, "lon": 30.5234},
-                "message": "H3 PostgreSQL integration working!"
-            }
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"H3 test failed: {str(e)}")
-
-# ==========================================
-# UPDATE ROOT ENDPOINT
-# ==========================================
-
-# Оновимо root endpoint (замінити існуючий)
-@app.get("/", tags=["System"])
-async def root():
-    """Root endpoint with system information"""
-    return {
-        "message": "GeoRetail Core Infrastructure",
-        "version": "2.1.0",  # Оновлена версія з H3
-        "status": "operational",
-        "timestamp": datetime.now().isoformat(),
-        "docs": "/docs",
-        "available_features": {
-            "neo4j": neo4j_client is not None,
-            "osm_extractor": osm_extractor is not None,
-            "fastapi_core": True,
-            "geometry_serialization": SHAPELY_AVAILABLE,
-            "h3_spatial_analysis": True,  # Додано
-            "postgis_h3": True,  # Додано
-            "redis_cache": "available",  # Додано
-        },
-        "next_setup_steps": [
-            "✅ Neo4j working" if neo4j_client else "❌ Fix Neo4j authentication",
-            "✅ OSM extraction working" if osm_extractor else "❌ Setup OSM extractor", 
-            "✅ PostGIS + H3 working",  # Оновлено
-            "⏳ Import demographics data",
-            "⏳ Import store network data",
-            "⏳ Implement H3 screening algorithms"
-        ],
-        "api_endpoints": {
-            "h3_analysis": "/api/v1/h3/info",
-            "location_screening": "/api/v1/h3/screen-location",
-            "store_import": "/api/v1/data/stores/import",
-            "database_status": "/api/v1/h3/database-status"
-        }
-    }
 # ==========================================
 # STARTUP/SHUTDOWN EVENTS
 # ==========================================
@@ -788,13 +729,14 @@ async def root():
 async def startup_event():
     """Application startup with status reporting"""
     print("\n" + "="*60)
-    print("🚀 GeoRetail Core Infrastructure Starting v2.0.1")
+    print("🚀 GeoRetail Core Infrastructure Starting v2.1.0")
     print("="*60)
     
     print(f"✅ FastAPI application loaded")
     print(f"{'✅' if neo4j_client else '❌'} Neo4j client: {'Available' if neo4j_client else 'Not available'}")
     print(f"{'✅' if osm_extractor else '❌'} OSM extractor: {'Available' if osm_extractor else 'Not available'}")
     print(f"{'✅' if SHAPELY_AVAILABLE else '⚠️ '} Geometry serialization: {'Available' if SHAPELY_AVAILABLE else 'Limited'}")
+    print(f"{'✅' if H3_ENDPOINTS_AVAILABLE else '❌'} H3 Modal API: {'Available' if H3_ENDPOINTS_AVAILABLE else 'Not available'}")
     
     print(f"\n📍 API available at:")
     print(f"   • Documentation: http://localhost:8000/docs")
@@ -804,16 +746,24 @@ async def startup_event():
     if osm_extractor:
         print(f"   • OSM Test:      http://localhost:8000/osm/extract/summary")
     
+    if H3_ENDPOINTS_AVAILABLE:
+        print(f"   • H3 Modal API:  http://localhost:8000/api/v1/hexagon-details/")
+        print(f"   • DB Test:       http://localhost:8000/api/v1/database/test-connection")
+        print(f"   • Coverage Calc: http://localhost:8000/api/v1/hexagon-details/coverage-calculator?resolution=10&rings=2")
+    
     ready_components = sum([
         1 if neo4j_client else 0,
         1 if osm_extractor else 0,
-        1 if SHAPELY_AVAILABLE else 0
+        1 if SHAPELY_AVAILABLE else 0,
+        1 if H3_ENDPOINTS_AVAILABLE else 0  # Додано
     ])
     
-    print(f"\n🎯 System Status: {ready_components}/3 core components ready")
+    print(f"\n🎯 System Status: {ready_components}/4 core components ready")
     
-    if ready_components == 3:
-        print("🎉 All core components working! Ready for H3 and PostGIS setup.")
+    if ready_components == 4:
+        print("🎉 All core components working! Ready for database integration.")
+    elif ready_components >= 3:
+        print("🎆 Most components working! Good to start testing.")
     
     print("="*60)
 
