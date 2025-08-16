@@ -1,7 +1,7 @@
 # src/api/endpoints/h3_modal_endpoints.py
 """
 🗂️ H3 Modal API Endpoints
-RESTful API для детального аналізу H3 гексагонів з інтеграцією бази даних
+RESTful API для детального аналізу H3 гексагонів з інтеграцією реальних даних
 """
 
 from fastapi import APIRouter, HTTPException, Query, Depends, Path
@@ -14,14 +14,23 @@ from datetime import datetime
 # Імпорт database service
 try:
     from ..services.database_service import get_database_service, DatabaseService
+    DATABASE_SERVICE_AVAILABLE = True
 except ImportError:
+    DATABASE_SERVICE_AVAILABLE = False
     # Fallback якщо database service недоступний
     class DatabaseService:
         """Placeholder class for type hints when database service is unavailable"""
-        pass
+        def get_h3_analytics(self, h3_index: str, resolution: int = 10) -> Dict[str, Any]:
+            return {"error": "Database service not available"}
+        
+        def get_poi_in_hexagon(self, h3_index: str, resolution: int = 10, include_neighbors: bool = False) -> List[Dict[str, Any]]:
+            return []
+        
+        def get_competitive_analysis(self, h3_index: str, radius_rings: int = 2, resolution: int = 10) -> Dict[str, Any]:
+            return {"error": "Database service not available", "competitors": []}
     
     def get_database_service():
-        return None
+        return DatabaseService()
 
 # Налаштування логування
 logger = logging.getLogger(__name__)
@@ -90,14 +99,12 @@ def calculate_optimal_rings(resolution: int, target_area_km2: float) -> int:
             raise ValueError(f"Resolution {resolution} не підтримується (7-10)")
         
         # Площа одного гексагона для resolution
-        # H3 v4.x uses average_hexagon_area with resolution
         single_hex_area = h3.average_hexagon_area(resolution, unit='km^2')
         
         if target_area_km2 <= single_hex_area:
             return 0  # Тільки центральний гексагон
         
         # Формула для кількості гексагонів в k-ring: 1 + 3*k*(k+1)
-        # Підбираємо k так, щоб площа була близька до цільової
         for rings in range(1, 15):
             total_hexagons = 1 + 3 * rings * (rings + 1)
             total_area = total_hexagons * single_hex_area
@@ -112,530 +119,402 @@ def calculate_optimal_rings(resolution: int, target_area_km2: float) -> int:
         return 2  # Fallback
 
 def get_area_coverage(resolution: int, rings: int) -> float:
-    """Розрахунок загальної площі покриття"""
+    """Розрахунок загальної площі покриття для заданої кількості кілець"""
     try:
-        # H3 v4.x uses average_hexagon_area with resolution
         single_hex_area = h3.average_hexagon_area(resolution, unit='km^2')
-        
-        if rings == 0:
-            return single_hex_area
-        
         total_hexagons = 1 + 3 * rings * (rings + 1)
         return total_hexagons * single_hex_area
-        
-    except Exception as e:
-        logger.error(f"Error calculating area coverage: {e}")
-        # Fallback to approximate values
-        approximate_areas = {
-            7: 5.161293360,
-            8: 0.737327598,
-            9: 0.105332513,
-            10: 0.015047502
-        }
-        single_hex_area = approximate_areas.get(resolution, 0.015)
-        if rings == 0:
-            return single_hex_area
-        total_hexagons = 1 + 3 * rings * (rings + 1)
-        return total_hexagons * single_hex_area
+    except Exception:
+        return 0.0
 
 # ===============================================
-# API ENDPOINTS
+# MAIN API ENDPOINTS
 # ===============================================
 
-@router.get("/details/{h3_index}", tags=["Hexagon Analysis"])
+@router.get("/details/{h3_index}")
 async def get_hexagon_details(
-    h3_index: str,
+    h3_index: str = Path(..., description="H3 індекс гексагона"),
     resolution: int = Query(..., ge=7, le=10, description="H3 resolution (7-10)"),
-    analysis_type: str = Query("pedestrian_competition", description="Type of analysis"),
-    custom_rings: Optional[int] = Query(None, ge=0, le=10, description="Custom rings (only for 'custom' analysis)"),
-    db: Union[DatabaseService, None] = Depends(get_database_service)
+    analysis_type: str = Query("pedestrian_competition", description="Тип аналізу"),
+    custom_rings: Optional[int] = Query(None, ge=1, le=10, description="Кількість кілець для custom аналізу"),
+    db: DatabaseService = Depends(get_database_service)
 ) -> Dict[str, Any]:
-    """Get detailed information about a specific H3 hexagon with analysis"""
+    """🎯 Детальний аналіз H3 гексагона з конфігурованими параметрами"""
     
-    # Validate H3 index
+    # Валідація H3 індексу
     if not h3.is_valid_cell(h3_index):
-        raise HTTPException(status_code=400, detail="Invalid H3 index")
+        raise HTTPException(status_code=400, detail=f"Invalid H3 index: {h3_index}")
     
-    # Validate analysis type
+    # Отримуємо конфігурацію аналізу
     if analysis_type not in ANALYSIS_CONFIGS:
-        raise HTTPException(status_code=400, detail=f"Invalid analysis type. Available: {list(ANALYSIS_CONFIGS.keys())}")
+        raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
     
-    try:
-        # Get H3 center coordinates - H3 v4.x compatibility
-        center_lat, center_lon = h3.cell_to_latlng(h3_index)
-        
-        # Get hex area
-        hex_area = h3.average_hexagon_area(resolution, unit='km^2')
-        
-        # Determine analysis configuration
-        if analysis_type == "custom" and custom_rings is not None:
-            rings = custom_rings
-            target_area = get_area_coverage(resolution, rings)
-        else:
-            config = ANALYSIS_CONFIGS.get(analysis_type, ANALYSIS_CONFIGS["pedestrian_competition"])
-            rings = calculate_optimal_rings(resolution, config["target_area_km2"])
-            rings = min(rings, config["max_rings"])
-        
-        # Calculate coverage metrics
-        area_coverage = get_area_coverage(resolution, rings)
-        neighbor_count = 1 + 3 * rings * (rings + 1) if rings > 0 else 1
-        
-        # Get POI data from database (or mock data)
-        poi_data = []
-        if db:
-            try:
-                poi_data = db.get_poi_in_hexagon(h3_index, include_neighbors=(rings > 0))
-            except Exception as e:
-                logger.warning(f"Database POI query failed: {e}, using mock data")
-        
-        # Generate mock data if no database or query failed
-        if not poi_data:
-            poi_data = [
-                {
-                    "poi_id": "mock_001",
-                    "name": "Sample Store 1",
-                    "canonical_name": "Brand A",
-                    "primary_category": "retail",
-                    "secondary_category": "convenience",
-                    "influence_weight": 0.8,
-                    "distance_from_center": 150,
-                    "h3_index": h3_index
-                },
-                {
-                    "poi_id": "mock_002", 
-                    "name": "Sample Store 2",
-                    "canonical_name": "Brand B",
-                    "primary_category": "food",
-                    "secondary_category": "restaurant", 
-                    "influence_weight": 0.6,
-                    "distance_from_center": 300,
-                    "h3_index": h3_index
-                }
-            ]
-        
-        # Get analytics from database (or mock)
-        metrics = {}
-        if db:
-            try:
-                analytics = db.get_h3_analytics(h3_index)
-                if analytics:
-                    metrics = {
-                        "poi_density": analytics.get("poi_density", 0),
-                        "population_estimate": analytics.get("population_estimate", 0),
-                        "foot_traffic_score": analytics.get("foot_traffic_score", 0),
-                        "competition_score": analytics.get("competition_score", 0),
-                        "transport_accessibility": analytics.get("transport_accessibility", 0),
-                        "data_quality_score": analytics.get("data_quality_score", 0.85)
-                    }
-            except Exception as e:
-                logger.warning(f"Database analytics query failed: {e}, using mock data")
-        
-        # Generate mock metrics if needed
-        if not metrics:
-            # Generate deterministic mock data based on H3 index
-            hash_val = hash(h3_index)
-            metrics = {
-                "poi_density": round((abs(hash_val) % 50) / 10.0, 1),
-                "population_estimate": (abs(hash_val) % 1000) + 100,
-                "foot_traffic_score": round((abs(hash_val) % 100) / 100.0, 2),
-                "competition_score": round((abs(hash_val >> 8) % 100) / 100.0, 2),
-                "transport_accessibility": round((abs(hash_val >> 16) % 100) / 100.0, 2),
-                "data_quality_score": 0.85
-            }
-        
-        # Build response
-        response = {
-            "location_info": {
-                "h3_index": h3_index,
-                "resolution": resolution,
-                "center_lat": center_lat,
-                "center_lon": center_lon,
-                "area_km2": hex_area
-            },
-            "analysis_config": {
-                "type": analysis_type,
-                "rings_analyzed": rings,
-                "custom_rings_used": analysis_type == "custom"
-            },
-            "neighbor_coverage": {
-                "rings": rings,
-                "hexagon_count": neighbor_count,
-                "area_km2": area_coverage
-            },
-            "metrics": metrics,
-            "poi_details": poi_data,
-            "analysis_timestamp": datetime.now().isoformat()
-        }
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error processing hexagon details for {h3_index}: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@router.get("/analysis-preview/{h3_index}", tags=["Analysis Preview"])
-async def get_analysis_preview(
-    h3_index: str,
-    resolution: int = Query(..., ge=7, le=10, description="H3 resolution")
-) -> Dict[str, Any]:
-    """Get preview of all available analysis types for a hexagon"""
+    config = ANALYSIS_CONFIGS[analysis_type].copy()
     
-    if not h3.is_valid_cell(h3_index):
-        raise HTTPException(status_code=400, detail="Invalid H3 index")
+    # Обробляємо custom кільця
+    if analysis_type == "custom" and custom_rings:
+        config["max_rings"] = custom_rings
+        config["target_area_km2"] = get_area_coverage(resolution, custom_rings)
     
-    try:
-        # Get basic location info - H3 v4.x compatibility
-        center_lat, center_lon = h3.cell_to_latlng(h3_index)
-        
-        # Generate preview for all analysis types
-        available_analyses = []
-        for analysis_name, config in ANALYSIS_CONFIGS.items():
-            optimal_rings = calculate_optimal_rings(resolution, config["target_area_km2"])
-            optimal_rings = min(optimal_rings, config["max_rings"])
-            estimated_area = get_area_coverage(resolution, optimal_rings)
-            estimated_count = 1 + 3 * optimal_rings * (optimal_rings + 1) if optimal_rings > 0 else 1
-            
-            available_analyses.append({
-                "analysis_type": analysis_name,
-                "name": config["name"],
-                "description": config["description"],
-                "optimal_rings": optimal_rings,
-                "estimated_area_km2": estimated_area,
-                "hexagon_count": estimated_count,
-                "max_rings": config["max_rings"]
-            })
-        
-        return {
-            "h3_index": h3_index,
-            "resolution": resolution,
-            "center_coordinates": {
-                "latitude": center_lat,
-                "longitude": center_lon
-            },
-            "available_analyses": available_analyses,
-            "generated_at": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting analysis preview for {h3_index}: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@router.get("/generate-kyiv-h3/{resolution}", tags=["Utilities"])
-async def generate_kyiv_h3(resolution: int = Path(..., ge=7, le=10, description="H3 resolution")) -> Dict[str, Any]:
-    """Generate valid H3 index for Kyiv center"""
-    try:
-        # Київ центр: 50.4501, 30.5234
-        kyiv_lat = 50.4501
-        kyiv_lon = 30.5234
-        
-        # Generate H3 cell
-        h3_index = h3.latlng_to_cell(kyiv_lat, kyiv_lon, resolution)
-        
-        # Verify it's valid
-        is_valid = h3.is_valid_cell(h3_index)
-        
-        # Get center back
-        center_lat, center_lon = h3.cell_to_latlng(h3_index)
-        
-        # Get area
-        area_km2 = h3.average_hexagon_area(resolution, unit='km^2')
-        
-        return {
-            "h3_index": h3_index,
-            "resolution": resolution,
-            "is_valid": is_valid,
-            "center_coordinates": {
-                "latitude": center_lat,
-                "longitude": center_lon
-            },
-            "area_km2": area_km2,
-            "original_coordinates": {
-                "latitude": kyiv_lat,
-                "longitude": kyiv_lon
-            }
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating H3 for Kyiv: {str(e)}")
-
-@router.get("/debug-h3", tags=["Debug"])
-async def debug_h3_functions() -> Dict[str, Any]:
-    """Debug H3 functions to find working area calculation"""
-    import h3
+    # Розраховуємо кількість кілець
+    optimal_rings = calculate_optimal_rings(resolution, config["target_area_km2"])
+    actual_rings = min(optimal_rings, config["max_rings"])
     
-    results = {
-        "h3_version": getattr(h3, '__version__', 'unknown'),
-        "available_functions": [f for f in dir(h3) if not f.startswith('_')],
-        "area_tests": {},
-        "coordinate_tests": {},
-        "validation_tests": {}
+    # Базова інформація про локацію
+    lat, lon = h3.cell_to_latlng(h3_index)
+    area_km2 = h3.cell_area(h3_index, unit='km^2')
+    
+    # Отримуємо аналітичні дані через database service
+    analytics_data = db.get_h3_analytics(h3_index, resolution)
+    
+    # Отримуємо POI дані
+    poi_data = db.get_poi_in_hexagon(h3_index, resolution, include_neighbors=True)
+    
+    # Розраховуємо покриття сусідніх областей
+    neighbor_coverage = {
+        "rings": actual_rings,
+        "hexagon_count": 1 + 3 * actual_rings * (actual_rings + 1),
+        "area_km2": round(get_area_coverage(resolution, actual_rings), 3),
+        "radius_estimate_m": round((get_area_coverage(resolution, actual_rings) / 3.14159) ** 0.5 * 1000, 0)
     }
     
-    resolution = 10
-    test_h3 = "8a1fb6699bfffff"
-    
-    # Test area functions
-    area_functions = [
-        ('hex_area(res)', lambda: h3.hex_area(resolution)),
-        ('hex_area(res, "km^2")', lambda: h3.hex_area(resolution, "km^2")),
-        ('hex_area(res, unit="km^2")', lambda: h3.hex_area(resolution, unit="km^2")),
-        ('cell_area(res)', lambda: h3.cell_area(resolution) if hasattr(h3, 'cell_area') else None),
-        ('cell_area(res, "km^2")', lambda: h3.cell_area(resolution, "km^2") if hasattr(h3, 'cell_area') else None),
-        ('hex_area_km2(res)', lambda: h3.hex_area_km2(resolution) if hasattr(h3, 'hex_area_km2') else None),
-        ('hex_area_m2(res)', lambda: h3.hex_area_m2(resolution) if hasattr(h3, 'hex_area_m2') else None),
-    ]
-    
-    for name, func in area_functions:
-        try:
-            result = func()
-            results["area_tests"][name] = {"value": result, "status": "success"}
-        except Exception as e:
-            results["area_tests"][name] = {"error": str(e), "status": "failed"}
-    
-    # Test coordinate functions
-    coord_functions = [
-        ('h3_to_geo', lambda: h3.h3_to_geo(test_h3) if hasattr(h3, 'h3_to_geo') else None),
-        ('cell_to_latlng', lambda: h3.cell_to_latlng(test_h3) if hasattr(h3, 'cell_to_latlng') else None),
-        ('h3_to_lat_lng', lambda: h3.h3_to_lat_lng(test_h3) if hasattr(h3, 'h3_to_lat_lng') else None),
-    ]
-    
-    for name, func in coord_functions:
-        try:
-            result = func()
-            results["coordinate_tests"][name] = {"value": result, "status": "success"}
-        except Exception as e:
-            results["coordinate_tests"][name] = {"error": str(e), "status": "failed"}
-    
-    # Test validation functions
-    validation_functions = [
-        ('h3_is_valid', lambda: h3.h3_is_valid(test_h3) if hasattr(h3, 'h3_is_valid') else None),
-        ('is_valid_cell', lambda: h3.is_valid_cell(test_h3) if hasattr(h3, 'is_valid_cell') else None),
-    ]
-    
-    for name, func in validation_functions:
-        try:
-            result = func()
-            results["validation_tests"][name] = {"value": result, "status": "success"}
-        except Exception as e:
-            results["validation_tests"][name] = {"error": str(e), "status": "failed"}
-    
-    # Add approximate areas as fallback
-    results["approximate_areas"] = {
-        7: 5.161293360,
-        8: 0.737327598,
-        9: 0.105332513,
-        10: 0.015047502
+    # Формуємо відповідь
+    result = {
+        "location_info": {
+            "h3_index": h3_index,
+            "resolution": resolution,
+            "center_lat": lat,
+            "center_lon": lon,
+            "area_km2": round(area_km2, 6)
+        },
+        "analysis_config": {
+            "type": analysis_type,
+            "name": config["name"],
+            "description": config["description"],
+            "rings_used": actual_rings
+        },
+        "metrics": analytics_data.get("density_metrics", {}),
+        "poi_details": {
+            "total_found": len(poi_data),
+            "summary": analytics_data.get("poi_stats", {}),
+            "top_pois": poi_data[:10]  # Топ 10 POI
+        },
+        "influence_analysis": analytics_data.get("influence_metrics", {}),
+        "neighbor_coverage": neighbor_coverage,
+        "available_analyses": list(ANALYSIS_CONFIGS.keys()),
+        "database_status": "available" if DATABASE_SERVICE_AVAILABLE else "mock_data",
+        "generated_at": datetime.now().isoformat()
     }
     
-    return results
+    return result
 
-@router.get("/coverage-calculator", tags=["Utilities"])
-async def get_coverage_calculator(
-    resolution: int = Query(..., ge=7, le=10, description="H3 resolution"),
-    rings: int = Query(..., ge=0, le=10, description="Number of rings")
-) -> Dict[str, Any]:
-    """Calculate coverage area for given resolution and rings"""
-    
-    try:
-        area_coverage = get_area_coverage(resolution, rings)
-        hexagon_count = 1 + 3 * rings * (rings + 1) if rings > 0 else 1
-        radius_estimate = int((area_coverage / 3.14159) ** 0.5 * 1000)
-        
-        # Generate step-by-step breakdown
-        coverage_breakdown = []
-        for r in range(0, min(rings + 1, 6)):  # Show up to 5 steps
-            step_area = get_area_coverage(resolution, r)
-            step_count = 1 + 3 * r * (r + 1) if r > 0 else 1
-            description = "Центральний гексагон" if r == 0 else f"+{r} кільце{'а' if r < 5 else 'ець'}"
-            
-            coverage_breakdown.append({
-                "rings": r,
-                "area_km2": step_area,
-                "hexagon_count": step_count,
-                "description": description
-            })
-        
-        return {
-            "resolution": resolution,
-            "rings": rings,
-            "total_area_km2": area_coverage,
-            "total_hexagon_count": hexagon_count,
-            "radius_estimate_m": radius_estimate,
-            "coverage_breakdown": coverage_breakdown,
-            "recommendations": {
-                "pedestrian_range": rings <= 3,
-                "car_accessible": rings >= 2,
-                "market_overview": rings >= 4
-            },
-            "generated_at": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error calculating coverage: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@router.get("/poi-in-hexagon/{h3_index}", tags=["POI Analysis"])
+@router.get("/poi-in-hexagon/{h3_index}")
 async def get_poi_in_hexagon(
-    h3_index: str,
-    resolution: int = Query(..., ge=7, le=10, description="H3 resolution"),
-    include_neighbors: int = Query(0, ge=0, le=3, description="Include neighbor rings (0-3)"),
-    db: Union[DatabaseService, None] = Depends(get_database_service)
+    h3_index: str = Path(..., description="H3 індекс гексагона"),
+    resolution: int = Query(..., ge=7, le=10, description="H3 resolution (7-10)"),
+    include_neighbors: int = Query(0, ge=0, le=3, description="Кількість кілець сусідніх гексагонів"),
+    poi_types: Optional[str] = Query(None, description="Фільтр по типах POI (через кому)"),
+    db: DatabaseService = Depends(get_database_service)
 ) -> Dict[str, Any]:
-    """Get all POIs within a hexagon and optionally its neighbors"""
+    """🏪 Отримання POI в гексагоні та сусідніх областях"""
     
+    # Валідація H3 індексу
     if not h3.is_valid_cell(h3_index):
-        raise HTTPException(status_code=400, detail="Invalid H3 index")
+        raise HTTPException(status_code=400, detail=f"Invalid H3 index: {h3_index}")
     
-    try:
-        # Get hexagon info
-        center_lat, center_lon = h3.cell_to_latlng(h3_index)
-        hex_area = h3.average_hexagon_area(resolution, unit='km^2')
+    # Отримуємо POI дані
+    poi_data = db.get_poi_in_hexagon(
+        h3_index=h3_index,
+        resolution=resolution,
+        include_neighbors=(include_neighbors > 0)
+    )
+    
+    # Фільтрація по типах якщо вказано
+    if poi_types:
+        allowed_types = [t.strip().lower() for t in poi_types.split(',')]
+        poi_data = [
+            poi for poi in poi_data 
+            if poi.get('functional_group', '').lower() in allowed_types
+            or poi.get('primary_category', '').lower() in allowed_types
+        ]
+    
+    # Статистика
+    total_poi = len(poi_data)
+    by_type = {}
+    by_brand = {}
+    
+    for poi in poi_data:
+        # Статистика по типах
+        poi_type = poi.get('functional_group', 'unknown')
+        by_type[poi_type] = by_type.get(poi_type, 0) + 1
         
-        # Calculate coverage area if neighbors included
-        total_area = get_area_coverage(resolution, include_neighbors) if include_neighbors > 0 else hex_area
-        total_hexagons = 1 + 3 * include_neighbors * (include_neighbors + 1) if include_neighbors > 0 else 1
-        
-        # Get POI data
-        poi_data = []
-        if db:
-            try:
-                poi_data = db.get_poi_in_hexagon(h3_index, include_neighbors=(include_neighbors > 0))
-            except Exception as e:
-                logger.warning(f"Database POI query failed: {e}, using mock data")
-        
-        # Generate mock data if needed
-        if not poi_data:
-            poi_data = [
-                {
-                    "poi_id": f"mock_{i:03d}",
-                    "name": f"POI {i}",
-                    "primary_category": "retail" if i % 2 == 0 else "food",
-                    "canonical_name": f"Brand {(i % 5) + 1}",
-                    "distance_from_center": i * 50,
-                    "h3_index": h3_index
-                }
-                for i in range(1, min(include_neighbors * 3 + 2, 15))
-            ]
-        
-        response = {
+        # Статистика по брендах
+        brand = poi.get('brand', 'unknown')
+        if brand and brand != 'unknown':
+            by_brand[brand] = by_brand.get(brand, 0) + 1
+    
+    # Базова інформація про локацію
+    lat, lon = h3.cell_to_latlng(h3_index)
+    
+    return {
+        "location_info": {
             "h3_index": h3_index,
             "resolution": resolution,
-            "center_coordinates": {
-                "latitude": center_lat,
-                "longitude": center_lon
-            },
-            "coverage": {
-                "neighbor_rings": include_neighbors,
-                "total_hexagons": total_hexagons,
-                "total_area_km2": total_area
-            },
-            "poi_summary": {
-                "total_pois": len(poi_data),
-                "poi_density_per_km2": round(len(poi_data) / total_area, 2) if total_area > 0 else 0
-            },
-            "poi_details": poi_data,
-            "timestamp": datetime.now().isoformat()
+            "center_lat": lat,
+            "center_lon": lon,
+            "include_neighbors": include_neighbors
+        },
+        "poi_summary": {
+            "total_found": total_poi,
+            "by_type": by_type,
+            "by_brand": dict(sorted(by_brand.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "unique_brands": len(by_brand),
+            "competitors": len([poi for poi in poi_data if poi.get('functional_group') == 'competitor'])
+        },
+        "poi_details": poi_data,
+        "search_parameters": {
+            "resolution": resolution,
+            "include_neighbors": include_neighbors,
+            "poi_types_filter": poi_types,
+            "database_status": "available" if DATABASE_SERVICE_AVAILABLE else "mock_data",
+            "search_timestamp": datetime.now().isoformat()
         }
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error getting POI data for {h3_index}: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    }
 
-@router.get("/competitive-analysis/{h3_index}", tags=["Competitive Analysis"])
+@router.get("/competitive-analysis/{h3_index}")
 async def get_competitive_analysis(
-    h3_index: str,
-    resolution: int = Query(..., ge=7, le=10, description="H3 resolution"),
-    radius_rings: int = Query(2, ge=1, le=5, description="Analysis radius in rings"),
-    db: Union[DatabaseService, None] = Depends(get_database_service)
+    h3_index: str = Path(..., description="H3 індекс центрального гексагона"),
+    resolution: int = Query(..., ge=7, le=10, description="H3 resolution (7-10)"),
+    radius_rings: int = Query(2, ge=1, le=5, description="Радіус в кільцях навколо центру"),
+    competitor_types: Optional[str] = Query(None, description="Типи конкурентів для аналізу"),
+    db: DatabaseService = Depends(get_database_service)
 ) -> Dict[str, Any]:
-    """Perform competitive analysis around a hexagon"""
+    """🥊 Детальний аналіз конкуренції навколо локації"""
     
+    # Валідація H3 індексу
     if not h3.is_valid_cell(h3_index):
-        raise HTTPException(status_code=400, detail="Invalid H3 index")
+        raise HTTPException(status_code=400, detail=f"Invalid H3 index: {h3_index}")
+    
+    # Отримуємо конкурентний аналіз
+    competitive_data = db.get_competitive_analysis(
+        h3_index=h3_index,
+        radius_rings=radius_rings,
+        resolution=resolution
+    )
+    
+    # Фільтрація конкурентів якщо вказано
+    if competitor_types:
+        allowed_types = [t.strip().lower() for t in competitor_types.split(',')]
+        competitors = competitive_data.get("competitors", [])
+        filtered_competitors = [
+            comp for comp in competitors
+            if comp.get('type', '').lower() in allowed_types
+        ]
+        competitive_data["competitors"] = filtered_competitors
+        competitive_data["competitors_found"] = len(filtered_competitors)
+    
+    # Базова інформація про локацію
+    lat, lon = h3.cell_to_latlng(h3_index)
+    
+    # Додаткова аналітика
+    competitors = competitive_data.get("competitors", [])
+    
+    # Розподіл по відстанях
+    distance_distribution = {}
+    for comp in competitors:
+        distance = comp.get("distance_rings", 0)
+        distance_distribution[f"ring_{distance}"] = distance_distribution.get(f"ring_{distance}", 0) + 1
+    
+    return {
+        "location_info": {
+            "h3_index": h3_index,
+            "resolution": resolution,
+            "center_lat": lat,
+            "center_lon": lon,
+            "analysis_radius_rings": radius_rings
+        },
+        "competitive_analysis": competitive_data,
+        "distance_analysis": {
+            "distribution_by_rings": distance_distribution,
+            "average_distance": round(
+                sum(comp.get("distance_rings", 0) for comp in competitors) / max(len(competitors), 1), 2
+            ),
+            "closest_competitor": min(competitors, key=lambda x: x.get("distance_rings", 999)) if competitors else None
+        },
+        "market_insights": {
+            "saturation_level": "high" if len(competitors) > 10 else "medium" if len(competitors) > 5 else "low",
+            "opportunity_assessment": competitive_data.get("recommendations", {}).get("market_opportunity", "unknown"),
+            "key_risks": competitive_data.get("recommendations", {}).get("risk_factors", [])
+        },
+        "analysis_metadata": {
+            "competitor_types_filter": competitor_types,
+            "database_status": "available" if DATABASE_SERVICE_AVAILABLE else "mock_data",
+            "search_timestamp": datetime.now().isoformat(),
+            "data_quality": "real_data" if competitors else "no_data"
+        }
+    }
+
+@router.get("/analysis-preview/{h3_index}")
+async def get_analysis_preview(
+    h3_index: str = Path(..., description="H3 індекс гексагона"),
+    resolution: int = Query(..., ge=7, le=10, description="H3 resolution (7-10)")
+) -> Dict[str, Any]:
+    """📊 Швидкий preview доступних аналізів для гексагона"""
+    
+    # Валідація H3 індексу
+    if not h3.is_valid_cell(h3_index):
+        raise HTTPException(status_code=400, detail=f"Invalid H3 index: {h3_index}")
+    
+    # Базова інформація
+    lat, lon = h3.cell_to_latlng(h3_index)
+    area_km2 = h3.cell_area(h3_index, unit='km^2')
+    
+    # Формуємо preview доступних аналізів
+    available_analyses = []
+    for analysis_type, config in ANALYSIS_CONFIGS.items():
+        rings = calculate_optimal_rings(resolution, config["target_area_km2"])
+        actual_rings = min(rings, config["max_rings"])
+        
+        analysis_info = {
+            "type": analysis_type,
+            "name": config["name"],
+            "description": config["description"],
+            "estimated_rings": actual_rings,
+            "estimated_area_km2": round(get_area_coverage(resolution, actual_rings), 2),
+            "focus_areas": config["focus"],
+            "endpoint": f"/api/v1/hexagon-details/details/{h3_index}?resolution={resolution}&analysis_type={analysis_type}"
+        }
+        available_analyses.append(analysis_info)
+    
+    return {
+        "location_info": {
+            "h3_index": h3_index,
+            "resolution": resolution,
+            "center_lat": lat,
+            "center_lon": lon,
+            "single_hex_area_km2": round(area_km2, 6)
+        },
+        "available_analyses": available_analyses,
+        "quick_actions": {
+            "poi_search": f"/api/v1/hexagon-details/poi-in-hexagon/{h3_index}?resolution={resolution}",
+            "competitive_analysis": f"/api/v1/hexagon-details/competitive-analysis/{h3_index}?resolution={resolution}",
+            "coverage_calculator": f"/api/v1/hexagon-details/coverage-calculator?resolution={resolution}&rings=2"
+        },
+        "system_status": {
+            "database_service": "available" if DATABASE_SERVICE_AVAILABLE else "fallback",
+            "h3_library": "v4.3.0",
+            "data_source": "real_postgresql" if DATABASE_SERVICE_AVAILABLE else "mock_data"
+        },
+        "generated_at": datetime.now().isoformat()
+    }
+
+# ===============================================
+# UTILITY ENDPOINTS
+# ===============================================
+
+@router.get("/coverage-calculator")
+async def calculate_coverage(
+    resolution: int = Query(..., ge=7, le=10, description="H3 resolution (7-10)"),
+    rings: int = Query(..., ge=0, le=10, description="Кількість кілець навколо центру")
+) -> Dict[str, Any]:
+    """🧮 Калькулятор покриття площі для H3 резолюції та кілець"""
     
     try:
-        # Get analysis from database or generate mock
-        analysis = {}
-        if db:
-            try:
-                analysis = db.get_competitive_analysis(h3_index, radius_rings)
-            except Exception as e:
-                logger.warning(f"Database competitive analysis failed: {e}, using mock data")
+        # Розрахунки H3
+        single_hex_area = h3.average_hexagon_area(resolution, unit='km^2')
+        total_hexagons = 1 + 3 * rings * (rings + 1) if rings > 0 else 1
+        total_area = total_hexagons * single_hex_area
         
-        # Generate mock analysis if needed
-        if not analysis:
-            # Get all hexagons in the analysis area using H3
-            area_hexagons = h3.grid_disk(h3_index, radius_rings)
+        # Оцінка радіусу
+        radius_km = (total_area / 3.14159) ** 0.5
+        radius_m = radius_km * 1000
+        
+        # Розподіл по кільцях
+        ring_breakdown = []
+        for ring in range(rings + 1):
+            if ring == 0:
+                hexagons_in_ring = 1
+            else:
+                hexagons_in_ring = 6 * ring
             
-            # Generate mock competitors
-            competitors = []
-            for i, hex_id in enumerate(list(area_hexagons)[:10]):  # Limit to 10
-                if hex_id != h3_index:  # Exclude center
-                    geo = h3.cell_to_latlng(hex_id)
-                    competitor = {
-                        "h3_index": hex_id,
-                        "name": f"Competitor {i+1}",
-                        "brand": f"Brand {(i % 3) + 1}",
-                        "primary_category": "retail",
-                        "latitude": geo[0],
-                        "longitude": geo[1],
-                        "competition_strength": round((hash(hex_id) % 100) / 100.0, 2),
-                        "distance_rings": min(radius_rings, (hash(hex_id) % radius_rings) + 1)
-                    }
-                    competitors.append(competitor)
-            
-            # Generate analysis summary
-            analysis = {
-                "center_h3": h3_index,
-                "radius_rings": radius_rings,
-                "total_hexagons_analyzed": len(area_hexagons),
-                "competitors_found": len(competitors),
-                "competitors": competitors,
-                "competition_summary": {
-                    "market_saturation": round((len(competitors) / len(area_hexagons)) * 100, 1),
-                    "average_competition_strength": round(
-                        sum(c["competition_strength"] for c in competitors) / max(len(competitors), 1), 2
-                    ),
-                    "dominant_brands": ["Brand 1", "Brand 2", "Brand 3"][:3]
-                },
-                "recommendations": {
-                    "market_opportunity": "medium" if len(competitors) < 5 else "low",
-                    "optimal_positioning": "differentiation",
-                    "risk_factors": ["High competition", "Market saturation"] if len(competitors) > 7 else ["Moderate competition"]
-                }
-            }
+            ring_breakdown.append({
+                "ring": ring,
+                "hexagons": hexagons_in_ring,
+                "area_km2": round(hexagons_in_ring * single_hex_area, 4)
+            })
         
-        # Add additional metadata
-        center_lat, center_lon = h3.cell_to_latlng(h3_index)
-        total_area = get_area_coverage(resolution, radius_rings)
-        
-        response = {
-            "analysis_metadata": {
-                "h3_index": h3_index,
+        return {
+            "input_parameters": {
                 "resolution": resolution,
-                "center_coordinates": {
-                    "latitude": center_lat,
-                    "longitude": center_lon
-                },
-                "analysis_radius_rings": radius_rings,
-                "total_area_analyzed_km2": total_area,
-                "analysis_timestamp": datetime.now().isoformat()
+                "rings": rings
             },
-            "competitive_analysis": analysis
+            "coverage_results": {
+                "single_hex_area_km2": round(single_hex_area, 6),
+                "total_hexagons": total_hexagons,
+                "total_area_km2": round(total_area, 4),
+                "radius_estimate_km": round(radius_km, 2),
+                "radius_estimate_m": round(radius_m, 0)
+            },
+            "ring_breakdown": ring_breakdown,
+            "comparison": {
+                "pedestrian_distance": "~500m" if radius_m <= 600 else "beyond walking",
+                "cycling_distance": "~2km" if radius_km <= 3 else "beyond cycling",
+                "driving_distance": "~5km" if radius_km <= 7 else "extended driving"
+            },
+            "calculated_at": datetime.now().isoformat()
         }
         
-        return response
-        
     except Exception as e:
-        logger.error(f"Error in competitive analysis for {h3_index}: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in coverage calculation: {e}")
+        raise HTTPException(status_code=500, detail=f"Calculation error: {str(e)}")
 
+@router.get("/health")
+async def health_check() -> Dict[str, Any]:
+    """🏥 Health check для H3 Modal API"""
+    
+    # Тест H3 функціональності
+    test_h3_index = "8a1fb46622d7fff"
+    h3_working = False
+    
+    try:
+        if h3.is_valid_cell(test_h3_index):
+            lat, lon = h3.cell_to_latlng(test_h3_index)
+            h3_working = True
+    except Exception:
+        h3_working = False
+    
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "components": {
+            "h3_library": {
+                "status": "operational" if h3_working else "error",
+                "version": "4.3.0",
+                "test_passed": h3_working
+            },
+            "database_service": {
+                "status": "available" if DATABASE_SERVICE_AVAILABLE else "fallback",
+                "data_source": "postgresql" if DATABASE_SERVICE_AVAILABLE else "mock"
+            },
+            "endpoints": {
+                "details": "operational",
+                "poi_search": "operational",
+                "competitive_analysis": "operational",
+                "coverage_calculator": "operational"
+            }
+        },
+        "capabilities": {
+            "h3_mathematics": True,
+            "real_data_integration": DATABASE_SERVICE_AVAILABLE,
+            "mock_data_fallback": True,
+            "competitive_analysis": True,
+            "poi_analysis": True
+        }
+    }
 
 # ===============================================
 # ROUTER EXPORT
 # ===============================================
 
-# Експорт router для використання в main_safe.py
+# Експорт router для використання в main файлах
 __all__ = ["router"]
