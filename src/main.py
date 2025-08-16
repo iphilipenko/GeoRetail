@@ -24,6 +24,16 @@ except ImportError as e:
     print(f"Note: Some existing modules not found: {e}")
     print("This is normal during initial setup")
 
+# Import H3 visualization endpoints
+try:
+    from api.endpoints.h3_visualization import router as h3_viz_router
+    from api.endpoints.h3_modal_endpoints import router as h3_modal_router
+    from api.endpoints.test_database_endpoint import router as test_db_router
+    H3_ENDPOINTS_AVAILABLE = True
+except ImportError as e:
+    print(f"H3 endpoints not available: {e}")
+    H3_ENDPOINTS_AVAILABLE = False
+
 # Import new Core Infrastructure modules
 try:
     from api.endpoints import health, screening, analysis
@@ -55,6 +65,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==========================================
+# REGISTER H3 ENDPOINTS
+# ==========================================
+
+if H3_ENDPOINTS_AVAILABLE:
+    # Register H3 visualization endpoints
+    app.include_router(h3_viz_router)
+    app.include_router(h3_modal_router)
+    app.include_router(test_db_router)
+    print("✅ H3 visualization, modal, and database test endpoints registered")
+else:
+    print("⚠️ H3 endpoints not available - check imports")
 
 # ==========================================
 # HEALTH CHECK ENDPOINTS

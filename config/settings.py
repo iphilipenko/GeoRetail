@@ -1,9 +1,16 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from typing import Optional
 
 class Settings(BaseSettings):
     """Application settings and configuration"""
+    
+    # Конфігурація моделі для Pydantic v2
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=False,
+        extra='allow'  # КЛЮЧОВЕ: дозволяє всі додаткові поля
+    )
     
     # Project paths
     project_root: Path = Path(__file__).parent.parent
@@ -14,6 +21,17 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j" 
     neo4j_password: str = "Nopassword"
     neo4j_database: str = "georetail"
+    
+    # PostgreSQL Configuration (додано для сумісності)
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "georetail"
+    postgres_user: str = "georetail_user"
+    postgres_password: str = "georetail_secure_2024"
+    
+    # Application Configuration (додано для сумісності)
+    environment: str = "development"
+    debug_mode: bool = True
     
     # OSM Configuration
     osm_radius_meters: int = 500
@@ -26,10 +44,6 @@ class Settings(BaseSettings):
     # Development Configuration
     debug: bool = True
     log_level: str = "INFO"
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
 # Global settings instance
 settings = Settings()
