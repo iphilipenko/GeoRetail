@@ -1,436 +1,335 @@
 // frontend/src/components/H3Visualization/components/ui/SmartLoadingIndicator.jsx
-
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import './SmartLoadingIndicator.css';
 
 /**
- * 🎨 Smart Loading Indicator - Progressive UI Component
- * 
- * Показує різні індикатори в залежності від стану завантаження:
- * - Tier 1: Instant Loading (червоний) - базове завантаження
- * - Tier 2: Enhancing Functionality (оранжевий) - покращення функціональності
- * - Tier 3: Background Optimization (синій) - оптимізація в фоні
- * - Complete: Success State (зелений) - готово
+ * Smart Loading Indicator - Progressive Loading UI
+ * Показує прогрес завантаження 5 tier'ів з галочками та timing'ом
  */
 
-// ===============================================
-// MAIN SMART LOADING INDICATOR
-// ===============================================
-
-const SmartLoadingIndicator = ({ 
-  loadingTiers, 
-  isBasicReady, 
-  isFullyFunctional, 
-  isCompletelyLoaded,
-  performanceMetrics = {},
-  currentActivity = '',
-  debugMode = false 
-}) => {
-  
-  // Complete state - система готова
-  if (isCompletelyLoaded) {
-    return (
-      <div style={{
-        position: 'absolute',
-        top: '20px',
-        left: '20px',
-        background: 'linear-gradient(135deg, rgba(50, 255, 126, 0.95), rgba(46, 213, 115, 0.9))',
-        color: 'white',
-        padding: '12px 18px',
-        borderRadius: '12px',
-        fontSize: '14px',
-        fontWeight: '600',
-        boxShadow: '0 8px 25px rgba(50, 255, 126, 0.4)',
-        border: '1px solid rgba(50, 255, 126, 0.6)',
-        backdropFilter: 'blur(10px)',
-        zIndex: 1000,
-        minWidth: '280px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ 
-            width: '20px', 
-            height: '20px', 
-            background: 'white',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '12px',
-            color: '#32ff7e'
-          }}>✓</div>
-          <span>🎉 Система готова до роботи</span>
-        </div>
-        {performanceMetrics.timeToInteractive && (
-          <div style={{ 
-            fontSize: '12px', 
-            opacity: 0.9, 
-            marginTop: '6px',
-            display: 'flex',
-            justifyContent: 'space-between'
-          }}>
-            <span>⚡ Готовність: {performanceMetrics.timeToInteractive}мс</span>
-            <span>📊 Повних даних: {Math.round(performanceMetrics.dataUtilizationRate || 0)}%</span>
-          </div>
-        )}
-      </div>
-    );
+// Status icons
+const StatusIcon = ({ status, isRetrying }) => {
+  switch (status) {
+    case 'success':
+      return <span className="status-icon success">✅</span>;
+    case 'error':
+      return <span className="status-icon error">❌</span>;
+    case 'loading':
+      return <span className="status-icon loading">⏳</span>;
+    case 'retrying':
+      return <span className="status-icon retrying">🔄</span>;
+    default:
+      return <span className="status-icon pending">⏸️</span>;
   }
+};
+
+// Tier progress bar
+const TierProgressBar = ({ tier, isActive }) => {
+  const completedDatasets = tier.datasets.filter(ds => ds.status === 'success').length;
+  const totalDatasets = tier.datasets.length;
+  const progress = totalDatasets > 0 ? (completedDatasets / totalDatasets) * 100 : 0;
   
-  // Tier 3: Background optimization - повна функціональність доступна
-  if (isFullyFunctional) {
-    return (
-      <div style={{
-        position: 'absolute',
-        top: '20px',
-        left: '20px',
-        background: 'linear-gradient(135deg, rgba(55, 66, 250, 0.95), rgba(116, 185, 255, 0.9))',
-        color: 'white',
-        padding: '12px 18px',
-        borderRadius: '12px',
-        fontSize: '14px',
-        fontWeight: '500',
-        boxShadow: '0 8px 25px rgba(55, 66, 250, 0.3)',
-        border: '1px solid rgba(55, 66, 250, 0.5)',
-        backdropFilter: 'blur(10px)',
-        zIndex: 1000,
-        minWidth: '280px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ 
-            width: '16px', 
-            height: '16px', 
-            background: 'rgba(255,255,255,0.3)',
-            borderRadius: '50%',
-            position: 'relative',
-            overflow: 'hidden'
-          }}>
-            <div style={{
-              width: `${loadingTiers.tier3?.progress || 0}%`,
-              height: '100%',
-              background: 'white',
-              transition: 'width 0.3s ease',
-              borderRadius: '50%'
-            }} />
+  return (
+    <div className={`tier-progress ${isActive ? 'active' : ''}`}>
+      <div 
+        className="tier-progress-fill" 
+        style={{ width: `${progress}%` }}
+      />
+    </div>
+  );
+};
+
+// Individual tier component
+const TierItem = ({ tier, isActive, analytics }) => {
+  const formatTime = (ms) => {
+    if (!ms) return '--';
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  };
+  
+  const getStatusText = () => {
+    switch (tier.status) {
+      case 'success':
+        return `Завершено за ${formatTime(tier.totalTime)}`;
+      case 'loading':
+        return 'Завантаження...';
+      case 'error':
+        return 'Помилка';
+      case 'retrying':
+        return 'Повтор...';
+      default:
+        return 'Очікування';
+    }
+  };
+  
+  const retryCount = analytics.retryStats[`tier-${tier.id}`] || 0;
+  
+  return (
+    <div className={`tier-item ${tier.status} ${isActive ? 'active' : ''}`}>
+      <div className="tier-header">
+        <StatusIcon status={tier.status} />
+        <div className="tier-info">
+          <div className="tier-title">
+            Tier {tier.id}: {tier.name}
+            {retryCount > 0 && (
+              <span className="retry-badge">retry {retryCount}</span>
+            )}
           </div>
-          <span>⚡ Повна функціональність доступна</span>
+          <div className="tier-status">{getStatusText()}</div>
         </div>
-        <div style={{ 
-          fontSize: '12px', 
-          opacity: 0.9, 
-          marginTop: '6px',
-          display: 'flex',
-          justifyContent: 'space-between'
-        }}>
-          <span>📦 Оптимізація в фоні... {Math.round(loadingTiers.tier3?.progress || 0)}%</span>
-          {performanceMetrics.timeToFullyFunctional && (
-            <span>🚀 {performanceMetrics.timeToFullyFunctional}мс</span>
+        <div className="tier-timing">
+          {tier.totalTime && (
+            <span className="load-time">{formatTime(tier.totalTime)}</span>
           )}
         </div>
       </div>
-    );
-  }
-  
-  // Tier 2: Enhancing functionality - базова готовність досягнута
-  if (isBasicReady) {
-    return (
-      <div style={{
-        position: 'absolute',
-        top: '20px',
-        left: '20px',
-        background: 'linear-gradient(135deg, rgba(255, 179, 71, 0.95), rgba(255, 202, 40, 0.9))',
-        color: 'white',
-        padding: '12px 18px',
-        borderRadius: '12px',
-        fontSize: '14px',
-        fontWeight: '500',
-        boxShadow: '0 8px 25px rgba(255, 179, 71, 0.3)',
-        border: '1px solid rgba(255, 179, 71, 0.5)',
-        backdropFilter: 'blur(10px)',
-        zIndex: 1000,
-        minWidth: '280px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ 
-            width: '16px', 
-            height: '16px', 
-            border: '2px solid rgba(255,255,255,0.4)',
-            borderTop: '2px solid white',
-            borderRadius: '50%',
-            animation: 'spin 1s linear infinite'
-          }} />
-          <span>Покращення функціональності...</span>
-        </div>
-        <div style={{ 
-          fontSize: '12px', 
-          opacity: 0.9, 
-          marginTop: '6px' 
-        }}>
-          <div style={{ marginBottom: '2px' }}>✅ Базовий перегляд доступний</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>🔄 Завантаження додаткових даних... {Math.round(loadingTiers.tier2?.progress || 0)}%</span>
-            {performanceMetrics.timeToInteractive && (
-              <span>⚡ {performanceMetrics.timeToInteractive}мс</span>
-            )}
-          </div>
-        </div>
-        <style jsx>{`
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        `}</style>
-      </div>
-    );
-  }
-  
-  // Tier 1: Initial loading - самий початок
-  return (
-    <div style={{
-      position: 'absolute',
-      top: '20px',
-      left: '20px',
-      background: 'linear-gradient(135deg, rgba(255, 107, 107, 0.95), rgba(255, 71, 87, 0.9))',
-      color: 'white',
-      padding: '12px 18px',
-      borderRadius: '12px',
-      fontSize: '14px',
-      fontWeight: '500',
-      boxShadow: '0 8px 25px rgba(255, 107, 107, 0.3)',
-      border: '1px solid rgba(255, 107, 107, 0.5)',
-      backdropFilter: 'blur(10px)',
-      zIndex: 1000,
-      minWidth: '280px'
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{ 
-          width: '16px', 
-          height: '16px', 
-          background: 'white',
-          borderRadius: '50%',
-          animation: 'pulse 1.5s ease-in-out infinite'
-        }} />
-        <span>Завантаження базових даних...</span>
-      </div>
-      <div style={{ 
-        fontSize: '12px', 
-        opacity: 0.9, 
-        marginTop: '6px',
-        display: 'flex',
-        justifyContent: 'space-between'
-      }}>
-        <span>⚡ {Math.round(loadingTiers.tier1?.progress || 0)}% (~2 секунди)</span>
-        <span>🎯 opportunity • H3-8</span>
-      </div>
-      {loadingTiers.tier1?.error && (
-        <div style={{ 
-          fontSize: '11px', 
-          marginTop: '4px', 
-          color: '#ffcccc',
-          background: 'rgba(255,255,255,0.1)',
-          padding: '4px 8px',
-          borderRadius: '6px'
-        }}>
-          ⚠️ {loadingTiers.tier1.error}
-        </div>
-      )}
-      {debugMode && (
-        <div style={{ 
-          fontSize: '10px', 
-          marginTop: '4px', 
-          opacity: 0.7,
-          fontFamily: 'monospace'
-        }}>
-          🐛 Activity: {currentActivity}
-        </div>
-      )}
-      <style jsx>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.6; transform: scale(0.9); }
-        }
-      `}</style>
-    </div>
-  );
-};
-
-// ===============================================
-// MINI PROGRESS INDICATOR (for sidebar/compact spaces)
-// ===============================================
-
-export const MiniProgressIndicator = ({ 
-  loadingTiers, 
-  isBasicReady, 
-  isFullyFunctional, 
-  isCompletelyLoaded 
-}) => {
-  const getTierStatus = () => {
-    if (isCompletelyLoaded) return { tier: 3, color: '#32ff7e', text: 'Готово' };
-    if (isFullyFunctional) return { tier: 3, color: '#3742fa', text: 'Оптимізація' };
-    if (isBasicReady) return { tier: 2, color: '#ffb347', text: 'Покращення' };
-    return { tier: 1, color: '#ff6b6b', text: 'Завантаження' };
-  };
-
-  const { tier, color, text } = getTierStatus();
-  const progress = loadingTiers[`tier${tier}`]?.progress || 0;
-
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px',
-      padding: '6px 10px',
-      background: `${color}20`,
-      border: `1px solid ${color}40`,
-      borderRadius: '8px',
-      fontSize: '12px',
-      fontWeight: '500'
-    }}>
-      <div style={{
-        width: '12px',
-        height: '12px',
-        background: `${color}30`,
-        borderRadius: '50%',
-        position: 'relative',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          width: `${progress}%`,
-          height: '100%',
-          background: color,
-          transition: 'width 0.3s ease',
-          borderRadius: '50%'
-        }} />
-      </div>
-      <span style={{ color }}>{text}</span>
-      <span style={{ color: `${color}80`, fontSize: '10px' }}>
-        {Math.round(progress)}%
-      </span>
-    </div>
-  );
-};
-
-// ===============================================
-// LOADING STATES DEBUGGER (development only)
-// ===============================================
-
-export const LoadingStatesDebugger = ({ 
-  loadingTiers, 
-  performanceMetrics, 
-  debugInfo 
-}) => {
-  if (process.env.NODE_ENV !== 'development') return null;
-
-  return (
-    <div style={{
-      position: 'absolute',
-      bottom: '20px',
-      right: '20px',
-      background: 'rgba(0, 0, 0, 0.9)',
-      color: '#00ff41',
-      padding: '12px',
-      borderRadius: '8px',
-      fontSize: '11px',
-      fontFamily: 'monospace',
-      maxWidth: '400px',
-      zIndex: 1000,
-      border: '1px solid #00ff41'
-    }}>
-      <div style={{ fontWeight: 'bold', marginBottom: '8px' }}>
-        🐛 Smart Loading Debug Panel
-      </div>
       
-      {/* Tier States */}
-      <div style={{ marginBottom: '8px' }}>
-        <div style={{ color: '#ffff00' }}>📊 Tier States:</div>
-        {Object.entries(loadingTiers).map(([tier, state]) => (
-          <div key={tier} style={{ marginLeft: '10px' }}>
-            {tier}: {state.status} ({state.progress}%)
-            {state.error && <span style={{ color: '#ff6b6b' }}> - {state.error}</span>}
+      <TierProgressBar tier={tier} isActive={isActive} />
+      
+      {/* Dataset details (expandable) */}
+      <div className="datasets-container">
+        {tier.datasets.map((dataset, index) => (
+          <div key={index} className={`dataset-item ${dataset.status}`}>
+            <span className="dataset-name">
+              {dataset.metric} H3-{dataset.resolution}
+            </span>
+            <span className="dataset-status">
+              <StatusIcon status={dataset.status} />
+              {dataset.loadTime && (
+                <span className="dataset-time">{formatTime(dataset.loadTime)}</span>
+              )}
+            </span>
           </div>
         ))}
       </div>
+    </div>
+  );
+};
 
-      {/* Performance Metrics */}
-      <div style={{ marginBottom: '8px' }}>
-        <div style={{ color: '#ffff00' }}>⚡ Performance:</div>
-        <div style={{ marginLeft: '10px' }}>
-          Interactive: {performanceMetrics.timeToInteractive || 'N/A'}ms
+// Main indicator component
+const SmartLoadingIndicator = ({ 
+  tiers, 
+  currentTier, 
+  isLoadingActive, 
+  analytics,
+  onRetry,
+  onClose,
+  isVisible = true 
+}) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  
+  // Auto-collapse after successful completion
+  useEffect(() => {
+    const allCompleted = tiers.every(tier => 
+      tier.status === 'success' || tier.status === 'error'
+    );
+    
+    if (allCompleted && isLoadingActive) {
+      setTimeout(() => {
+        setIsExpanded(false);
+      }, 3000); // Auto-collapse after 3 seconds
+    }
+  }, [tiers, isLoadingActive]);
+  
+  if (!isVisible) return null;
+  
+  const completedTiers = tiers.filter(tier => tier.status === 'success').length;
+  const errorTiers = tiers.filter(tier => tier.status === 'error').length;
+  const totalProgress = (completedTiers / tiers.length) * 100;
+  
+  const formatTime = (ms) => {
+    if (!ms) return '--';
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  };
+  
+  return (
+    <div className={`smart-loading-indicator ${isExpanded ? 'expanded' : 'collapsed'}`}>
+      {/* Header */}
+      <div className="indicator-header" onClick={() => setIsExpanded(!isExpanded)}>
+        <div className="header-left">
+          <h3>Smart Loading Progress</h3>
+          <div className="progress-summary">
+            {completedTiers}/{tiers.length} tier'ів завершено
+            {errorTiers > 0 && (
+              <span className="error-count"> ({errorTiers} помилок)</span>
+            )}
+          </div>
         </div>
-        <div style={{ marginLeft: '10px' }}>
-          Functional: {performanceMetrics.timeToFullyFunctional || 'N/A'}ms
-        </div>
-        <div style={{ marginLeft: '10px' }}>
-          Complete: {performanceMetrics.timeToComplete || 'N/A'}ms
+        
+        <div className="header-right">
+          <div className="overall-progress">
+            <div className="progress-circle">
+              <svg viewBox="0 0 36 36" className="circular-chart">
+                <path
+                  className="circle-bg"
+                  d="M18 2.0845
+                    a 15.9155 15.9155 0 0 1 0 31.831
+                    a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+                <path
+                  className="circle"
+                  strokeDasharray={`${totalProgress}, 100`}
+                  d="M18 2.0845
+                    a 15.9155 15.9155 0 0 1 0 31.831
+                    a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+              </svg>
+              <div className="progress-text">{Math.round(totalProgress)}%</div>
+            </div>
+          </div>
+          
+          <button 
+            className="expand-toggle"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsExpanded(!isExpanded);
+            }}
+          >
+            {isExpanded ? '▼' : '▶'}
+          </button>
         </div>
       </div>
+      
+      {/* Expanded content */}
+      {isExpanded && (
+        <div className="indicator-content">
+          {/* Tier list */}
+          <div className="tiers-list">
+            {tiers.map((tier) => (
+              <TierItem
+                key={tier.id}
+                tier={tier}
+                isActive={currentTier === tier.id}
+                analytics={analytics}
+              />
+            ))}
+          </div>
+          
+          {/* Analytics toggle */}
+          <div className="analytics-section">
+            <button 
+              className="analytics-toggle"
+              onClick={() => setShowAnalytics(!showAnalytics)}
+            >
+              📊 {showAnalytics ? 'Сховати' : 'Показати'} аналітику
+            </button>
+            
+            {showAnalytics && (
+              <div className="analytics-details">
+                <div className="analytics-grid">
+                  <div className="analytics-item">
+                    <span className="analytics-label">Перша взаємодія:</span>
+                    <span className="analytics-value">
+                      {formatTime(analytics.timeToFirstInteraction)}
+                    </span>
+                  </div>
+                  <div className="analytics-item">
+                    <span className="analytics-label">Повна функціональність:</span>
+                    <span className="analytics-value">
+                      {formatTime(analytics.timeToFullFunctionality)}
+                    </span>
+                  </div>
+                  <div className="analytics-item">
+                    <span className="analytics-label">Загальний час:</span>
+                    <span className="analytics-value">
+                      {formatTime(analytics.totalLoadTime)}
+                    </span>
+                  </div>
+                  <div className="analytics-item">
+                    <span className="analytics-label">Провалені tier'и:</span>
+                    <span className="analytics-value">
+                      {analytics.failedTiers.length || 'Немає'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Action buttons */}
+          <div className="indicator-actions">
+            {errorTiers > 0 && (
+              <button className="retry-button" onClick={onRetry}>
+                🔄 Повторити помилки ({errorTiers})
+              </button>
+            )}
+            
+            <button className="close-button" onClick={onClose}>
+              ✕ Закрити
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
-      {/* Cache Info */}
-      <div>
-        <div style={{ color: '#ffff00' }}>💾 Cache:</div>
-        <div style={{ marginLeft: '10px' }}>
-          Size: {debugInfo?.cacheSize || 0} entries
-        </div>
-        <div style={{ marginLeft: '10px' }}>
-          Keys: {debugInfo?.cacheKeys?.slice(0, 3).join(', ') || 'none'}
-          {debugInfo?.cacheKeys?.length > 3 && '...'}
-        </div>
+// Mini indicator for when main indicator is closed
+export const MiniLoadingIndicator = ({ 
+  tiers, 
+  currentTier, 
+  isLoadingActive,
+  onClick 
+}) => {
+  if (!isLoadingActive) return null;
+  
+  const completedTiers = tiers.filter(tier => tier.status === 'success').length;
+  const errorTiers = tiers.filter(tier => tier.status === 'error').length;
+  
+  return (
+    <div className="mini-loading-indicator" onClick={onClick}>
+      <div className="mini-progress">
+        {tiers.map((tier) => (
+          <div 
+            key={tier.id}
+            className={`mini-tier ${tier.status} ${currentTier === tier.id ? 'active' : ''}`}
+            title={`Tier ${tier.id}: ${tier.name} - ${tier.status}`}
+          >
+            {tier.status === 'success' && '✅'}
+            {tier.status === 'error' && '❌'}
+            {tier.status === 'loading' && '⏳'}
+            {tier.status === 'pending' && '⏸️'}
+            {tier.status === 'retrying' && '🔄'}
+          </div>
+        ))}
+      </div>
+      <div className="mini-summary">
+        {completedTiers}/{tiers.length}
+        {errorTiers > 0 && ` (${errorTiers} errors)`}
       </div>
     </div>
   );
 };
 
-// ===============================================
-// LEGACY COMPATIBILITY WRAPPER
-// ===============================================
-
+// Progress bar component for legacy compatibility
 export const ProgressBarCompat = ({ 
   overallProgress, 
   currentStep, 
-  isLegacyMode = false 
+  isSmartLoading = false 
 }) => {
-  // Wrapper для compatibility з існуючим PreloadProgressBar
-  if (isLegacyMode) {
+  if (isSmartLoading) {
     return (
-      <div style={{
-        position: 'absolute',
-        top: '20px',
-        left: '20px',
-        background: 'rgba(255, 255, 255, 0.95)',
-        padding: '15px',
-        borderRadius: '8px',
-        boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
-        minWidth: '300px',
-        zIndex: 1000
-      }}>
-        <div style={{ marginBottom: '10px', fontSize: '14px', fontWeight: '500' }}>
-          {currentStep || 'Завантаження...'}
-        </div>
-        <div style={{
-          width: '100%',
-          height: '8px',
-          background: '#e0e0e0',
-          borderRadius: '4px',
-          overflow: 'hidden'
-        }}>
-          <div style={{
-            width: `${overallProgress || 0}%`,
-            height: '100%',
-            background: 'linear-gradient(90deg, #4CAF50, #45a049)',
-            transition: 'width 0.3s ease'
-          }} />
-        </div>
-        <div style={{ 
-          marginTop: '8px', 
-          fontSize: '12px', 
-          color: '#666',
-          textAlign: 'right'
-        }}>
-          {Math.round(overallProgress || 0)}%
+      <div className="progress-bar-compat smart">
+        <div className="smart-progress-message">
+          🚀 Smart Loading активний - детальний прогрес в панелі
         </div>
       </div>
     );
   }
-
-  return null;
+  
+  // Legacy progress bar
+  return (
+    <div className="progress-bar-compat legacy">
+      <div className="progress-bar">
+        <div 
+          className="progress-fill" 
+          style={{ width: `${overallProgress}%` }}
+        />
+      </div>
+      <div className="progress-text">{currentStep}</div>
+      <div className="progress-percentage">{overallProgress}%</div>
+    </div>
+  );
 };
 
 export default SmartLoadingIndicator;
