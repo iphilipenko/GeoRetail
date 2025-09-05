@@ -15,6 +15,8 @@ from pathlib import Path
 from datetime import datetime
 from api.endpoints.h3_visualization import router as visualization_router
 
+# Import analytics router  
+from api.endpoints.analytics import router as analytics_router
 
 # Shapely imports for geometry serialization
 try:
@@ -242,9 +244,13 @@ app.add_middleware(
 # Register routers
 app.include_router(visualization_router)
 
+# Register analytics router
+app.include_router(analytics_router)
+
 # Register H3 Modal endpoints
 if H3_ENDPOINTS_AVAILABLE:
     app.include_router(h3_modal_router)
+    app.include_router(test_db_router)
     app.include_router(test_db_router)
     print("✅ H3 Modal and Database test endpoints registered")
 
