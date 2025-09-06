@@ -1,17 +1,17 @@
 """
 scripts/etl/clickhouse/utils.py
-Утиліти для роботи з базами даних PostGIS та ClickHouse
-Забезпечує підключення, виконання запитів та обробку помилок
+Утиліти для роботи з PostGIS та ClickHouse
+ТЕРМІНОВЕ ВИПРАВЛЕННЯ - правильний autocommit та ClickHouse синтаксис
 """
 
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from clickhouse_driver import Client
-from typing import List, Dict, Any, Optional
 from contextlib import contextmanager
-import sys
 from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 # Налаштування логування
 logging.basicConfig(
@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 class PostgresConnector:
     """
     Клас для роботи з PostGIS базою даних
-    Забезпечує безпечне підключення та виконання запитів
+    ВИПРАВЛЕНО: правильний autocommit режим
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict):
         """
         Ініціалізація конектора
         
@@ -37,12 +37,18 @@ class PostgresConnector:
         self.config = config
         self.connection = None
         self.cursor = None
-    
+        
     @contextmanager
-    def connect(self):
+    def connect(self, autocommit: bool = False):
         """
         Контекстний менеджер для безпечного підключення
-        Автоматично закриває з'єднання після використання
+        ВИПРАВЛЕНО: autocommit встановлюється ДО створення курсора
+        
+        Args:
+            autocommit: Чи використовувати autocommit режим
+        
+        Yields:
+            Self з активним підключенням
         """
         try:
             # Створюємо підключення
@@ -53,38 +59,68 @@ class PostgresConnector:
                 user=self.config['user'],
                 password=self.config['password']
             )
+            
+            # ВАЖЛИВО: встановлюємо autocommit ДО створення курсора
+            if autocommit:
+                self.connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                logger.debug("Autocommit режим увімкнено")
+            
+            # Тепер створюємо курсор з RealDictCursor
             self.cursor = self.connection.cursor(cursor_factory=RealDictCursor)
             logger.info(f"✅ Підключено до PostGIS: {self.config['database']}")
             
             yield self
             
+            # Commit тільки якщо НЕ в autocommit режимі
+            if not autocommit and self.connection:
+                self.connection.commit()
+                
         except psycopg2.Error as e:
+            # Rollback тільки якщо НЕ в autocommit режимі
+            if self.connection and not autocommit:
+                try:
+                    self.connection.rollback()
+                    logger.warning("⚠️ Виконано rollback транзакції")
+                except:
+                    pass  # Ігноруємо помилки rollback
             logger.error(f"❌ Помилка підключення до PostGIS: {e}")
             raise
+            
         finally:
             # Закриваємо підключення
             if self.cursor:
-                self.cursor.close()
+                try:
+                    self.cursor.close()
+                except:
+                    pass
             if self.connection:
-                self.connection.close()
-                logger.info("Закрито підключення до PostGIS")
+                try:
+                    self.connection.close()
+                except:
+                    pass
+            logger.info("Закрито підключення до PostGIS")
     
-    def execute_query(self, query: str, params: Optional[tuple] = None) -> List[Dict]:
+    def execute_query(self, query: str, params: tuple = None) -> List[Dict]:
         """
         Виконує SELECT запит та повертає результати
         
         Args:
             query: SQL запит
-            params: Параметри для запиту (опційно)
+            params: Параметри для запиту
             
         Returns:
             Список словників з результатами
         """
         try:
-            self.cursor.execute(query, params)
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+            
             results = self.cursor.fetchall()
             logger.info(f"Отримано {len(results)} записів")
             return results
+            
         except psycopg2.Error as e:
             logger.error(f"Помилка виконання запиту: {e}")
             raise
@@ -97,10 +133,10 @@ class PostgresConnector:
             True якщо підключення успішне
         """
         try:
-            with self.connect():
+            with self.connect(autocommit=True):
                 self.cursor.execute("SELECT version()")
-                version = self.cursor.fetchone()
-                logger.info(f"PostgreSQL версія: {version['version']}")
+                result = self.cursor.fetchone()
+                logger.info(f"PostgreSQL версія: {result['version']}")
                 return True
         except Exception as e:
             logger.error(f"Тест підключення не вдався: {e}")
@@ -110,10 +146,10 @@ class PostgresConnector:
 class ClickHouseConnector:
     """
     Клас для роботи з ClickHouse базою даних
-    Забезпечує підключення та виконання запитів
+    ВИПРАВЛЕНО: правильний синтаксис для системних запитів
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict):
         """
         Ініціалізація конектора
         
@@ -122,14 +158,16 @@ class ClickHouseConnector:
         """
         self.config = config
         self.client = None
-    
+        
     @contextmanager
     def connect(self):
         """
         Контекстний менеджер для безпечного підключення
+        
+        Yields:
+            Self з активним підключенням
         """
         try:
-            # Створюємо клієнт ClickHouse
             self.client = Client(
                 host=self.config['host'],
                 port=self.config['port'],
@@ -138,65 +176,137 @@ class ClickHouseConnector:
                 password=self.config['password']
             )
             logger.info(f"✅ Підключено до ClickHouse: {self.config['database']}")
-            
             yield self
             
         except Exception as e:
             logger.error(f"❌ Помилка підключення до ClickHouse: {e}")
             raise
+            
         finally:
-            # Закриваємо підключення
             if self.client:
                 self.client.disconnect()
-                logger.info("Закрито підключення до ClickHouse")
+            logger.info("Закрито підключення до ClickHouse")
     
-    def execute_query(self, query: str, params: Optional[Dict] = None) -> List[tuple]:
+    def get_table_columns(self, table: str) -> List[str]:
         """
-        Виконує запит та повертає результати
+        Отримує список колонок таблиці
+        ВИПРАВЛЕНО: використовуємо правильний синтаксис без параметризації
         
         Args:
-            query: SQL запит
-            params: Параметри для запиту (опційно)
+            table: Назва таблиці (може бути з базою даних: db.table)
             
         Returns:
-            Список кортежів з результатами
+            Список назв колонок
         """
         try:
-            result = self.client.execute(query, params or {})
-            logger.info(f"Виконано запит, отримано {len(result)} записів")
-            return result
+            # Розділяємо базу даних та таблицю
+            if '.' in table:
+                db_name, table_name = table.split('.')
+            else:
+                db_name = self.config['database']
+                table_name = table
+            
+            # ВИПРАВЛЕНО: використовуємо f-string замість параметризації
+            # ClickHouse не підтримує параметризацію для системних запитів
+            query = f"""
+            SELECT name
+            FROM system.columns
+            WHERE database = '{db_name}' AND table = '{table_name}'
+            ORDER BY position
+            """
+            
+            result = self.client.execute(query)
+            columns = [row[0] for row in result]
+            
+            logger.debug(f"Знайдено {len(columns)} колонок в таблиці {table}")
+            return columns
+            
         except Exception as e:
-            logger.error(f"Помилка виконання запиту: {e}")
-            raise
+            logger.error(f"Помилка отримання структури таблиці {table}: {e}")
+            return []
     
-    def insert_data(self, table: str, data: List[Dict], columns: List[str]) -> int:
+    def insert_data(self, table: str, data: List[Dict], columns: List[str] = None) -> int:
         """
         Вставляє дані в таблицю ClickHouse
+        ВИПРАВЛЕНО: перевірка на порожній список колонок
         
         Args:
             table: Назва таблиці
             data: Список словників з даними
-            columns: Список колонок для вставки
+            columns: Список колонок
             
         Returns:
             Кількість вставлених записів
         """
+        if not data:
+            logger.warning("Немає даних для вставки")
+            return 0
+        
         try:
-            # Підготовка даних для вставки
+            # Отримуємо існуючі колонки
+            existing_columns = self.get_table_columns(table)
+            
+            if not existing_columns:
+                logger.error(f"❌ Не вдалося отримати колонки таблиці {table}")
+                return 0
+            
+            # Визначаємо колонки для вставки
+            if columns:
+                # Фільтруємо тільки існуючі
+                valid_columns = [col for col in columns if col in existing_columns]
+            else:
+                # Беремо з першого запису, але тільки існуючі
+                first_record_cols = list(data[0].keys())
+                valid_columns = [col for col in first_record_cols if col in existing_columns]
+            
+            if not valid_columns:
+                logger.error("❌ Жодна колонка не відповідає структурі таблиці!")
+                logger.error(f"Колонки в даних: {list(data[0].keys())[:10]}")
+                logger.error(f"Колонки в таблиці: {existing_columns[:10]}")
+                return 0
+            
+            # Логуємо різницю
+            if columns:
+                missing = set(columns) - set(valid_columns)
+                if missing:
+                    logger.warning(f"⚠️ Пропущено {len(missing)} відсутніх колонок")
+                    logger.debug(f"Відсутні: {missing}")
+            
+            # Підготовка даних
             values = []
             for row in data:
-                values.append([row.get(col) for col in columns])
+                row_values = []
+                for col in valid_columns:
+                    value = row.get(col)
+                    # Конвертуємо None в відповідні значення
+                    if value is None:
+                        if 'String' in str(type(value)):
+                            value = ''
+                        elif any(x in col for x in ['count', 'total', 'id']):
+                            value = 0
+                        elif any(x in col for x in ['score', 'index', 'density', 'ratio']):
+                            value = 0.0
+                    row_values.append(value)
+                values.append(row_values)
             
             # Формуємо запит
-            query = f"INSERT INTO {table} ({','.join(columns)}) VALUES"
+            columns_str = ', '.join(f'`{col}`' for col in valid_columns)
+            placeholders = ', '.join(['%s'] * len(valid_columns))
+            query = f"INSERT INTO {table} ({columns_str}) VALUES"
             
             # Виконуємо вставку
             self.client.execute(query, values)
+            
             logger.info(f"✅ Вставлено {len(values)} записів в {table}")
+            logger.info(f"📊 Використано {len(valid_columns)} з {len(existing_columns)} колонок")
             return len(values)
             
         except Exception as e:
             logger.error(f"Помилка вставки даних: {e}")
+            # Додаткова діагностика
+            if "Syntax error" in str(e):
+                logger.error("Можлива проблема з SQL синтаксисом")
+                logger.debug(f"Колонки: {valid_columns[:5]}...")
             raise
     
     def test_connection(self) -> bool:
@@ -219,7 +329,6 @@ class ClickHouseConnector:
 class ETLProgress:
     """
     Клас для відстеження прогресу ETL процесу
-    Показує прогрес-бар та статистику
     """
     
     def __init__(self, total_records: int, task_name: str):
