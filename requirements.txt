@@ -71,3 +71,11 @@ tqdm>=4.64.0
 geopandas>=0.12.0
 h3>=3.7.0
 pandas>=1.5.0
+
+# ClickHouse drivers
+clickhouse-driver>=0.2.6
+clickhouse-connect>=0.6.0
+
+# Додаткові бібліотеки для ETL
+rich>=13.7.0  # для красивого виводу прогресу
+schedule>=1.2.0  # для планування ETL

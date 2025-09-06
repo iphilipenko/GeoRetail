@@ -8,3 +8,11 @@ fuzzywuzzy[speedup]>=0.18.0
 
 # Development
 pytest>=7.4.0
+
+# ClickHouse drivers
+clickhouse-driver>=0.2.6
+clickhouse-connect>=0.6.0
+
+# Додаткові бібліотеки для ETL
+rich>=13.7.0  # для красивого виводу прогресу
+schedule>=1.2.0  # для планування ETL
