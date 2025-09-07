@@ -1,7 +1,8 @@
 """
 scripts/etl/clickhouse/03_h3_analytics.py
 ETL для міграції H3 гексагонів з PostGIS в ClickHouse
-ФІНАЛЬНА ВЕРСІЯ - прямий INSERT без використання utils.insert_data
+МОДИФІКОВАНА ВЕРСІЯ - з правильним розрахунком населення для всіх резолюцій
+ВИПРАВЛЕНО: використання правильних назв функцій h3 (cell_to_children, cell_to_parent)
 """
 
 import logging
@@ -42,6 +43,8 @@ class H3AnalyticsETL:
         self.ch_conn = ClickHouseConnector(CH_CONFIG)
         self.start_time = datetime.now()
         self.total_processed = 0
+        # Кеш для H3-8 населення (використовується для розрахунку інших резолюцій)
+        self.h8_population_cache = None
         
     def get_oblasts(self) -> List[Dict]:
         """
@@ -95,12 +98,69 @@ class H3AnalyticsETL:
             results = self.pg_conn.cursor.fetchall()
             return results if results else []
     
-    def enrich_with_population(self, hexagons: List[Dict]) -> List[Dict]:
+    def load_h8_population_cache(self):
         """
-        Додає дані про населення з demographics.h3_population
+        Завантажує всі H3-8 з населенням в кеш для подальшого використання
+        """
+        if self.h8_population_cache is not None:
+            return  # Вже завантажено
+        
+        logger.info("📊 Завантаження H3-8 населення в кеш...")
+        
+        with self.pg_conn.connect():
+            query = """
+            SELECT 
+                hex_id as h3_index,
+                population
+            FROM demographics.h3_population
+            WHERE resolution = 8 AND population > 0
+            """
+            self.pg_conn.cursor.execute(query)
+            h8_data = self.pg_conn.cursor.fetchall()
+        
+        self.h8_population_cache = {
+            row['h3_index']: float(row['population']) 
+            for row in h8_data
+        }
+        logger.info(f"✅ Завантажено {len(self.h8_population_cache):,} H3-8 гексагонів з населенням")
+    
+    def enrich_with_population(self, hexagons: List[Dict], resolution: int) -> List[Dict]:
+        """
+        Додає дані про населення залежно від резолюції
         
         Args:
             hexagons: Список гексагонів
+            resolution: H3 резолюція
+            
+        Returns:
+            Збагачені гексагони
+        """
+        if not hexagons:
+            return hexagons
+        
+        if resolution == 8:
+            # Для H3-8 беремо дані напряму з demographics.h3_population
+            return self.enrich_h8_with_population(hexagons)
+        elif resolution == 7:
+            # Для H3-7 агрегуємо з H3-8
+            return self.calculate_h7_population_from_h8(hexagons)
+        elif resolution in [9, 10]:
+            # Для H3-9 та H3-10 дезагрегуємо з H3-8
+            return self.calculate_h9_h10_population_from_h8(hexagons, resolution)
+        
+        # Для інших резолюцій (якщо будуть) - нулі
+        for h in hexagons:
+            h['population'] = 0
+            h['population_density'] = 0
+        
+        return hexagons
+    
+    def enrich_h8_with_population(self, hexagons: List[Dict]) -> List[Dict]:
+        """
+        Додає дані про населення для H3-8 з demographics.h3_population
+        
+        Args:
+            hexagons: Список H3-8 гексагонів
             
         Returns:
             Збагачені гексагони
@@ -119,7 +179,6 @@ class H3AnalyticsETL:
             for i in range(0, len(h3_indices), batch_size):
                 batch_indices = h3_indices[i:i+batch_size]
                 
-                # Використовуємо простий IN
                 if batch_indices:
                     indices_str = ','.join([f"'{idx}'" for idx in batch_indices])
                     query = f"""
@@ -146,6 +205,169 @@ class H3AnalyticsETL:
         for h in hexagons:
             h.setdefault('population', 0)
             h.setdefault('population_density', 0)
+        
+        return hexagons
+    
+    def calculate_h7_population_from_h8(self, hexagons: List[Dict]) -> List[Dict]:
+        """
+        Розраховує населення для H3-7 через агрегацію з H3-8
+        
+        Args:
+            hexagons: Список H3-7 гексагонів
+            
+        Returns:
+            Гексагони з розрахованим населенням
+        """
+        if not hexagons:
+            return hexagons
+        
+        import h3
+        
+        logger.info("📊 Розрахунок населення H3-7 через агрегацію з H3-8...")
+        
+        # Завантажуємо кеш H3-8 якщо ще не завантажено
+        self.load_h8_population_cache()
+        
+        # Площа H3-7
+        h7_area = 5.161  # км²
+        
+        # Розраховуємо для кожного H3-7
+        calculated = 0
+        for hex_data in hexagons:
+            h7_hex = hex_data['h3_index']
+            
+            try:
+                # Отримуємо дочірні H3-8
+                # ВИКОРИСТОВУЄМО ПРАВИЛЬНУ НАЗВУ ФУНКЦІЇ
+                h8_children = h3.cell_to_children(h7_hex, 8)
+                
+                # Сумуємо населення дочірніх
+                total_population = sum(
+                    self.h8_population_cache.get(h8_hex, 0) 
+                    for h8_hex in h8_children
+                )
+                
+                hex_data['population'] = total_population
+                hex_data['population_density'] = total_population / h7_area if total_population > 0 else 0
+                
+                if total_population > 0:
+                    calculated += 1
+                    
+            except Exception as e:
+                logger.warning(f"  Помилка для H3-7 {h7_hex}: {str(e)}")
+                hex_data['population'] = 0
+                hex_data['population_density'] = 0
+        
+        logger.info(f"  ✅ Розраховано населення для {calculated:,} з {len(hexagons):,} H3-7 гексагонів")
+        
+        return hexagons
+    
+    def calculate_h9_h10_population_from_h8(self, hexagons: List[Dict], target_resolution: int) -> List[Dict]:
+        """
+        Розраховує населення для H3-9 або H3-10 через дезагрегацію з H3-8
+        використовуючи population_corrected з building_footprints
+        
+        Args:
+            hexagons: Список H3-9 або H3-10 гексагонів
+            target_resolution: Цільова резолюція (9 або 10)
+            
+        Returns:
+            Гексагони з розрахованим населенням
+        """
+        if not hexagons or target_resolution not in [9, 10]:
+            return hexagons
+        
+        import h3
+        
+        logger.info(f"📊 Розрахунок населення H3-{target_resolution} через дезагрегацію з H3-8...")
+        
+        # Завантажуємо кеш H3-8 якщо ще не завантажено
+        self.load_h8_population_cache()
+        
+        # Отримуємо population_corrected з building_footprints
+        h3_field = f'h3_res_{target_resolution}'
+        
+        with self.pg_conn.connect():
+            query = f"""
+            SELECT 
+                {h3_field} as h3_index,
+                SUM(population_corrected) as total_population
+            FROM osm_ukraine.building_footprints
+            WHERE {h3_field} IS NOT NULL 
+                AND population_corrected > 0
+            GROUP BY {h3_field}
+            """
+            self.pg_conn.cursor.execute(query)
+            building_data = self.pg_conn.cursor.fetchall()
+        
+        building_population_map = {
+            row['h3_index']: float(row['total_population']) 
+            for row in building_data
+        }
+        logger.info(f"  Завантажено {len(building_population_map):,} H3-{target_resolution} з population_corrected")
+        
+        # Створюємо мапу H3-{target_resolution} -> H3-8 (parent)
+        hex_to_parent_h8 = {}
+        for hex_data in hexagons:
+            hex_index = hex_data['h3_index']
+            try:
+                # Знаходимо батьківський H3-8
+                # ВИКОРИСТОВУЄМО ПРАВИЛЬНУ НАЗВУ ФУНКЦІЇ
+                parent_h8 = h3.cell_to_parent(hex_index, 8)
+                hex_to_parent_h8[hex_index] = parent_h8
+            except:
+                hex_to_parent_h8[hex_index] = None
+        
+        # Групуємо гексагони за батьківським H3-8
+        h8_to_children = {}
+        for hex_index, parent_h8 in hex_to_parent_h8.items():
+            if parent_h8 and parent_h8 in self.h8_population_cache:
+                if parent_h8 not in h8_to_children:
+                    h8_to_children[parent_h8] = []
+                h8_to_children[parent_h8].append(hex_index)
+        
+        # Розподіляємо населення для кожного H3-8
+        hex_map = {h['h3_index']: h for h in hexagons}
+        calculated = 0
+        
+        for parent_h8, children in h8_to_children.items():
+            parent_population = self.h8_population_cache[parent_h8]
+            
+            # Отримуємо population_corrected для дочірніх
+            children_building_pop = {
+                child: building_population_map.get(child, 0) 
+                for child in children
+            }
+            
+            total_building_pop = sum(children_building_pop.values())
+            
+            # Розподіляємо населення
+            for child_hex in children:
+                if child_hex in hex_map:
+                    if total_building_pop > 0:
+                        # Пропорційний розподіл
+                        ratio = children_building_pop[child_hex] / total_building_pop
+                        child_population = parent_population * ratio
+                    else:
+                        # Рівномірний розподіл при відсутності даних
+                        child_population = parent_population / len(children)
+                    
+                    hex_map[child_hex]['population'] = child_population
+                    
+                    # Розраховуємо щільність
+                    area_km2 = 0.105 if target_resolution == 9 else 0.015
+                    hex_map[child_hex]['population_density'] = child_population / area_km2
+                    
+                    if child_population > 0:
+                        calculated += 1
+        
+        # Заповнюємо нулями ті, що не мають батьківського H3-8 з населенням
+        for hex_data in hexagons:
+            if 'population' not in hex_data:
+                hex_data['population'] = 0
+                hex_data['population_density'] = 0
+        
+        logger.info(f"  ✅ Розраховано населення для {calculated:,} з {len(hexagons):,} H3-{target_resolution} гексагонів")
         
         return hexagons
     
@@ -304,12 +526,10 @@ class H3AnalyticsETL:
         area_km2 = hex_areas.get(resolution, 1.0)
         
         for h in hexagons:
-            # 1. Population density
-            pop_density = h.get('population_density', 0)
-            if not pop_density and h.get('population', 0) > 0:
-                h['population_density'] = h['population'] / area_km2
-            else:
-                h['population_density'] = float(pop_density) if pop_density else 0
+            # 1. Population density - вже розрахована в enrich_with_population
+            # Тільки перевіряємо що є значення
+            if 'population_density' not in h:
+                h['population_density'] = 0
             
             # 2. Income index (0-1)
             transaction_sum = h.get('transaction_sum', 0)
@@ -597,9 +817,9 @@ class H3AnalyticsETL:
                 
                 total_extracted += len(hexagons)
                 
-                # 2. Збагачення даними
+                # 2. Збагачення даними (населення тепер розраховується залежно від резолюції)
                 try:
-                    hexagons = self.enrich_with_population(hexagons)
+                    hexagons = self.enrich_with_population(hexagons, resolution)
                 except Exception as e:
                     logger.warning(f"⚠️ Помилка збагачення населенням для {oblast_name}: {str(e)[:100]}")
                 
@@ -678,7 +898,8 @@ class H3AnalyticsETL:
                     AVG(risk_score) as avg_risk,
                     COUNT(DISTINCT oblast_id) as oblasts,
                     MIN(income_index) as min_income,
-                    MAX(income_index) as max_income
+                    MAX(income_index) as max_income,
+                    COUNT(CASE WHEN population_density > 0 THEN 1 END) as with_population
                 FROM geo_analytics.h3_analytics
                 GROUP BY resolution
                 ORDER BY resolution
@@ -693,11 +914,12 @@ class H3AnalyticsETL:
             total_count = 0
             
             for row in result:
-                res, count, avg_pop, avg_pot, avg_risk, oblasts, min_inc, max_inc = row
+                res, count, avg_pop, avg_pot, avg_risk, oblasts, min_inc, max_inc, with_pop = row
                 total_count += count
                 
                 logger.info(f"\n  H3-{res}: {count:,} гексагонів")
                 logger.info(f"    Областей: {oblasts}")
+                logger.info(f"    З населенням: {with_pop:,} ({with_pop/count*100:.1f}%)")
                 
                 if avg_pop:
                     logger.info(f"    Середня щільність: {avg_pop:.1f} чол/км²")
@@ -720,6 +942,7 @@ class H3AnalyticsETL:
     def run(self, resolutions: Optional[List[int]] = None) -> bool:
         """
         Запускає повний ETL процес для вказаних резолюцій
+        ЗМІНЕНО: Новий порядок обробки - спочатку H3-8, потім інші
         
         Args:
             resolutions: Список резолюцій для обробки (за замовчуванням всі)
@@ -734,11 +957,23 @@ class H3AnalyticsETL:
             
             # Визначаємо які резолюції обробляти
             if resolutions is None:
-                resolutions = sorted(self.RESOLUTIONS.keys())
+                # НОВИЙ ПОРЯДОК: спочатку 8, потім 7, потім 9, 10
+                resolutions = [8, 7, 9, 10]
             else:
-                resolutions = sorted([r for r in resolutions if r in self.RESOLUTIONS])
+                # Якщо вказані конкретні резолюції - обробляємо в правильному порядку
+                ordered_resolutions = []
+                if 8 in resolutions:
+                    ordered_resolutions.append(8)
+                if 7 in resolutions:
+                    ordered_resolutions.append(7)
+                if 9 in resolutions:
+                    ordered_resolutions.append(9)
+                if 10 in resolutions:
+                    ordered_resolutions.append(10)
+                resolutions = ordered_resolutions
             
-            logger.info(f"📋 Резолюції для обробки: {resolutions}")
+            logger.info(f"📋 Резолюції для обробки (в порядку виконання): {resolutions}")
+            logger.info("   ℹ️ Порядок важливий: H3-8 → H3-7 → H3-9 → H3-10")
             
             # Очищаємо таблицю перед завантаженням
             from clickhouse_driver import Client
@@ -753,7 +988,7 @@ class H3AnalyticsETL:
             client.disconnect()
             logger.info("🗑️ Таблиця h3_analytics очищена")
             
-            # Обробляємо кожну резолюцію
+            # Обробляємо кожну резолюцію В ПРАВИЛЬНОМУ ПОРЯДКУ
             stats = {}
             for resolution in resolutions:
                 extracted, loaded = self.process_resolution(resolution)
@@ -772,17 +1007,20 @@ class H3AnalyticsETL:
                 logger.info(f"⏱️ Час виконання: {elapsed}")
                 logger.info(f"📊 Статистика по резолюціях:")
                 
-                for res, data in stats.items():
-                    if data['extracted'] > 0:
-                        efficiency = (data['loaded'] / data['extracted']) * 100
-                        logger.info(f"  H3-{res}: {data['loaded']:,} / {data['extracted']:,} ({efficiency:.1f}%)")
-                    else:
-                        logger.info(f"  H3-{res}: немає даних")
+                for res in [8, 7, 9, 10]:  # Показуємо в логічному порядку
+                    if res in stats:
+                        data = stats[res]
+                        if data['extracted'] > 0:
+                            efficiency = (data['loaded'] / data['extracted']) * 100
+                            logger.info(f"  H3-{res}: {data['loaded']:,} / {data['extracted']:,} ({efficiency:.1f}%)")
+                        else:
+                            logger.info(f"  H3-{res}: немає даних")
                 
                 logger.info(f"\n📊 Всього оброблено: {self.total_processed:,} гексагонів")
                 logger.info(f"\n🎯 Наступні кроки:")
                 logger.info(f"  1. Запустіть 02_admin_bins.py для розрахунку bins адмінодиниць")
                 logger.info(f"  2. Запустіть 04_h3_bins.py для розрахунку bins гексагонів")
+                logger.info(f"  3. Файл 05_recalculate_population.py більше не потрібен!")
             else:
                 logger.error(f"❌ ETL ЗАВЕРШЕНО З ПОМИЛКАМИ")
             
@@ -807,7 +1045,7 @@ def main():
         type=int, 
         nargs='+',
         default=None,
-        help='Резолюції для обробки (наприклад: --resolutions 7 8)'
+        help='Резолюції для обробки (наприклад: --resolutions 8 7 9 10)'
     )
     
     args = parser.parse_args()
@@ -815,8 +1053,9 @@ def main():
     etl = H3AnalyticsETL()
     
     # Для тестування можна запустити тільки з меншими резолюціями
-    # python 03_h3_analytics.py --resolutions 7
-    # python 03_h3_analytics.py --resolutions 7 8
+    # python 03_h3_analytics.py --resolutions 8
+    # python 03_h3_analytics.py --resolutions 8 7
+    # python 03_h3_analytics.py --resolutions 8 7 9 10
     
     success = etl.run(resolutions=args.resolutions)
     sys.exit(0 if success else 1)
