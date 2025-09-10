@@ -31,6 +31,18 @@ except ImportError:
 src_path = Path(__file__).parent
 sys.path.append(str(src_path))
 
+
+try:
+    from api.endpoints.auth_endpoints import router as auth_router
+    AUTH_ENDPOINTS_AVAILABLE = True
+    print("✅ Auth endpoints loaded successfully")
+except ImportError as e:
+    print(f"❌ Auth endpoints not available: {e}")
+    AUTH_ENDPOINTS_AVAILABLE = False
+    auth_router = None
+
+
+
 # Import modules with safe fallbacks
 neo4j_client = None
 osm_extractor = None
@@ -246,6 +258,11 @@ app.include_router(visualization_router)
 
 # Register analytics router
 app.include_router(analytics_router)
+
+if AUTH_ENDPOINTS_AVAILABLE:
+    app.include_router(auth_router)
+    print("✅ Auth endpoints registered at /api/v2/auth/*")
+
 
 # Register H3 Modal endpoints
 if H3_ENDPOINTS_AVAILABLE:

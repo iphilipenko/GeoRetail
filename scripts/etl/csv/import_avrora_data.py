@@ -243,7 +243,7 @@ class AvroraDataImporter:
         if not csv_path.exists():
             raise FileNotFoundError(f"File not found: {csv_path}")
         
-        df = pd.read_csv(csv_path, encoding='utf-8')
+        df = pd.read_csv(csv_path, encoding='utf-8', sep=';')
         logger.info(f"  Read {len(df)} records")
         
         stores_data = []
@@ -346,7 +346,7 @@ class AvroraDataImporter:
         if not csv_path.exists():
             raise FileNotFoundError(f"File not found: {csv_path}")
         
-        df = pd.read_csv(csv_path, encoding='utf-8')
+        df = pd.read_csv(csv_path, encoding='utf-8', sep=';')
         logger.info(f"  Read {len(df)} records")
         
         isochrones_data = []
@@ -450,7 +450,7 @@ class AvroraDataImporter:
         if not csv_path.exists():
             raise FileNotFoundError(f"File not found: {csv_path}")
         
-        df = pd.read_csv(csv_path, encoding='utf-8')
+        df = pd.read_csv(csv_path, encoding='utf-8', sep=';')
         logger.info(f"  Read {len(df)} records")
         
         competitors_count = 0
@@ -472,11 +472,6 @@ class AvroraDataImporter:
                 insert_query = """
                     INSERT INTO avrora.competitors (name, brand, lat, lon)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (lat, lon) 
-                    DO UPDATE SET
-                        name = EXCLUDED.name,
-                        brand = EXCLUDED.brand,
-                        updated_at = CURRENT_TIMESTAMP
                     RETURNING competitor_id
                 """
                 
