@@ -1,29 +1,24 @@
 """
-# Dependency injection (get_current_user, etc.)
-Created for API v2 Domain-Driven Architecture
-"""
-"""
 File: src/api/v2/core/dependencies.py
-Path: C:\projects\AA AI Assistance\GeoRetail_git\georetail\src\api\v2\core\dependencies.py
-
-Purpose: Базові dependency injection функції для всіх endpoints API v2
-- Автентифікація користувачів
-- Перевірка permissions
-- Отримання database sessions
-- Rate limiting
-- Pagination helpers
+FIXED VERSION - правильний JOIN з RBACModule
 """
 
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from typing import Optional, List, Dict, Any, Callable
-from functools import wraps
+from typing import Optional, List, Dict, Any
 import logging
 
 # Імпорти з існуючої системи
 from core.rbac_database import get_db
-from models.rbac_models import RBACUser, RBACPermission, RBACUserRole, RBACRolePermission
+from models.rbac_models import (
+    RBACUser, 
+    RBACPermission, 
+    RBACUserRole, 
+    RBACRolePermission,
+    RBACRole,
+    RBACModule  # ВАЖЛИВО: додано для JOIN
+)
 from api.endpoints.auth_endpoints import decode_token, oauth2_scheme
 
 # Логування
@@ -54,7 +49,13 @@ async def get_current_user(
     try:
         # Декодуємо токен
         payload = decode_token(token)
-        user_id = payload.get("sub")
+        if not payload:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired token"
+            )
+            
+        user_id = int(payload.get("sub"))  # Конвертуємо в int
         
         if not user_id:
             raise HTTPException(
@@ -81,6 +82,8 @@ async def get_current_user(
         
         return user
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Authentication error: {e}")
         raise HTTPException(
@@ -103,17 +106,21 @@ async def get_current_active_user(
     return current_user
 
 async def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    authorization: Optional[str] = Depends(HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db)
 ) -> Optional[RBACUser]:
     """
     Опціональна автентифікація - для публічних endpoints
     з різним рівнем доступу для авторизованих/неавторизованих
     """
-    if not credentials:
+    if not authorization:
         return None
     
     try:
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer",
+            credentials=authorization.credentials
+        )
         return await get_current_user(credentials, db)
     except HTTPException:
         return None
@@ -135,20 +142,44 @@ def require_permission(permission_code: str):
     ) -> bool:
         # Superuser має всі дозволи
         if current_user.is_superuser:
+            logger.info(f"Superuser {current_user.email} bypassing permission check")
             return True
         
-        # Перевіряємо permissions через ролі
-        has_permission = db.query(RBACPermission).join(
-            RBACRolePermission
-        ).join(
-            RBACUserRole,
-            RBACUserRole.role_id == RBACRolePermission.role_id
-        ).filter(
-            RBACUserRole.user_id == current_user.id,
-            RBACUserRole.is_active == True,
-            RBACPermission.code == permission_code,
-            RBACPermission.is_active == True
-        ).first()
+        # ВИПРАВЛЕНО: Правильний JOIN з RBACModule
+        # Розбиваємо permission_code на module і permission
+        if '.' in permission_code:
+            module_code, perm_code = permission_code.split('.', 1)
+            
+            # Перевіряємо чи є permission через JOIN
+            has_permission = db.query(RBACPermission).join(
+                RBACModule,
+                RBACPermission.module_id == RBACModule.id
+            ).join(
+                RBACRolePermission,
+                RBACRolePermission.permission_id == RBACPermission.id
+            ).join(
+                RBACUserRole,
+                RBACUserRole.role_id == RBACRolePermission.role_id
+            ).filter(
+                RBACUserRole.user_id == current_user.id,
+                RBACUserRole.is_active == True,
+                RBACModule.code == module_code,
+                RBACPermission.code == permission_code,  # Перевіряємо повний код
+                RBACPermission.is_active == True
+            ).first()
+        else:
+            # Якщо немає крапки - шукаємо просто по коду permission
+            has_permission = db.query(RBACPermission).join(
+                RBACRolePermission
+            ).join(
+                RBACUserRole,
+                RBACUserRole.role_id == RBACRolePermission.role_id
+            ).filter(
+                RBACUserRole.user_id == current_user.id,
+                RBACUserRole.is_active == True,
+                RBACPermission.code == permission_code,
+                RBACPermission.is_active == True
+            ).first()
         
         if not has_permission:
             logger.warning(
@@ -160,6 +191,7 @@ def require_permission(permission_code: str):
                 detail=f"Permission '{permission_code}' required"
             )
         
+        logger.info(f"User {current_user.email} granted permission: {permission_code}")
         return True
     
     return permission_checker
@@ -167,11 +199,6 @@ def require_permission(permission_code: str):
 def require_any_permission(permission_codes: List[str]):
     """
     Перевірка що користувач має хоча б один з permissions
-    
-    Usage:
-        @router.get("/", dependencies=[
-            Depends(require_any_permission(["core.view_h3_basic", "core.view_h3_detailed"]))
-        ])
     """
     async def permission_checker(
         current_user: RBACUser = Depends(get_current_active_user),
@@ -182,29 +209,38 @@ def require_any_permission(permission_codes: List[str]):
             return True
         
         # Перевіряємо чи є хоча б один permission
-        has_permission = db.query(RBACPermission).join(
-            RBACRolePermission
-        ).join(
-            RBACUserRole,
-            RBACUserRole.role_id == RBACRolePermission.role_id
-        ).filter(
-            RBACUserRole.user_id == current_user.id,
-            RBACUserRole.is_active == True,
-            RBACPermission.code.in_(permission_codes),
-            RBACPermission.is_active == True
-        ).first()
+        for permission_code in permission_codes:
+            if '.' in permission_code:
+                module_code, perm_code = permission_code.split('.', 1)
+                
+                has_permission = db.query(RBACPermission).join(
+                    RBACModule,
+                    RBACPermission.module_id == RBACModule.id
+                ).join(
+                    RBACRolePermission,
+                    RBACRolePermission.permission_id == RBACPermission.id
+                ).join(
+                    RBACUserRole,
+                    RBACUserRole.role_id == RBACRolePermission.role_id
+                ).filter(
+                    RBACUserRole.user_id == current_user.id,
+                    RBACUserRole.is_active == True,
+                    RBACModule.code == module_code,
+                    RBACPermission.code == permission_code,
+                    RBACPermission.is_active == True
+                ).first()
+                
+                if has_permission:
+                    return True
         
-        if not has_permission:
-            logger.warning(
-                f"Permission denied: User {current_user.username} "
-                f"lacks any of permissions: {permission_codes}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"One of permissions required: {', '.join(permission_codes)}"
-            )
-        
-        return True
+        logger.warning(
+            f"Permission denied: User {current_user.username} "
+            f"lacks any of permissions: {permission_codes}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"One of permissions required: {', '.join(permission_codes)}"
+        )
     
     return permission_checker
 
@@ -220,9 +256,16 @@ def require_all_permissions(permission_codes: List[str]):
         if current_user.is_superuser:
             return True
         
-        # Отримуємо всі permissions користувача
-        user_permissions = db.query(RBACPermission.code).join(
-            RBACRolePermission
+        # Отримуємо всі permissions користувача через JOIN
+        user_permissions = db.query(
+            RBACPermission.code.label('perm_code'),
+            RBACModule.code.label('module_code')
+        ).join(
+            RBACModule,
+            RBACPermission.module_id == RBACModule.id
+        ).join(
+            RBACRolePermission,
+            RBACRolePermission.permission_id == RBACPermission.id
         ).join(
             RBACUserRole,
             RBACUserRole.role_id == RBACRolePermission.role_id
@@ -232,7 +275,10 @@ def require_all_permissions(permission_codes: List[str]):
             RBACPermission.is_active == True
         ).all()
         
-        user_permission_codes = {p[0] for p in user_permissions}
+        # Формуємо set повних кодів permissions
+        user_permission_codes = {
+            f"{p.module_code}.{p.perm_code}" for p in user_permissions
+        }
         required_set = set(permission_codes)
         
         if not required_set.issubset(user_permission_codes):
@@ -264,14 +310,27 @@ async def get_user_permissions(
     """
     if current_user.is_superuser:
         # Superuser має всі permissions
-        all_permissions = db.query(RBACPermission.code).filter(
+        all_permissions = db.query(
+            RBACPermission.code.label('perm_code'),
+            RBACModule.code.label('module_code')
+        ).join(
+            RBACModule,
+            RBACPermission.module_id == RBACModule.id
+        ).filter(
             RBACPermission.is_active == True
         ).all()
-        return [p[0] for p in all_permissions]
+        return [f"{p.module_code}.{p.perm_code}" for p in all_permissions]
     
     # Звичайний користувач - permissions через ролі
-    permissions = db.query(RBACPermission.code).join(
-        RBACRolePermission
+    permissions = db.query(
+        RBACPermission.code.label('perm_code'),
+        RBACModule.code.label('module_code')
+    ).join(
+        RBACModule,
+        RBACPermission.module_id == RBACModule.id
+    ).join(
+        RBACRolePermission,
+        RBACRolePermission.permission_id == RBACPermission.id
     ).join(
         RBACUserRole,
         RBACUserRole.role_id == RBACRolePermission.role_id
@@ -281,7 +340,7 @@ async def get_user_permissions(
         RBACPermission.is_active == True
     ).distinct().all()
     
-    return [p[0] for p in permissions]
+    return [f"{p.module_code}.{p.perm_code}" for p in permissions]
 
 def has_permission(user: RBACUser, permission_code: str, db: Session) -> bool:
     """
@@ -291,17 +350,37 @@ def has_permission(user: RBACUser, permission_code: str, db: Session) -> bool:
     if user.is_superuser:
         return True
     
-    exists = db.query(RBACPermission).join(
-        RBACRolePermission
-    ).join(
-        RBACUserRole,
-        RBACUserRole.role_id == RBACRolePermission.role_id
-    ).filter(
-        RBACUserRole.user_id == user.id,
-        RBACUserRole.is_active == True,
-        RBACPermission.code == permission_code,
-        RBACPermission.is_active == True
-    ).first()
+    if '.' in permission_code:
+        module_code, perm_code = permission_code.split('.', 1)
+        
+        exists = db.query(RBACPermission).join(
+            RBACModule,
+            RBACPermission.module_id == RBACModule.id
+        ).join(
+            RBACRolePermission,
+            RBACRolePermission.permission_id == RBACPermission.id
+        ).join(
+            RBACUserRole,
+            RBACUserRole.role_id == RBACRolePermission.role_id
+        ).filter(
+            RBACUserRole.user_id == user.id,
+            RBACUserRole.is_active == True,
+            RBACModule.code == module_code,
+            RBACPermission.code == permission_code,
+            RBACPermission.is_active == True
+        ).first()
+    else:
+        exists = db.query(RBACPermission).join(
+            RBACRolePermission
+        ).join(
+            RBACUserRole,
+            RBACUserRole.role_id == RBACRolePermission.role_id
+        ).filter(
+            RBACUserRole.user_id == user.id,
+            RBACUserRole.is_active == True,
+            RBACPermission.code == permission_code,
+            RBACPermission.is_active == True
+        ).first()
     
     return exists is not None
 
@@ -386,6 +465,13 @@ class RateLimitParams:
         return current_count < self.limit
 
 # ==========================================
+# DATABASE SESSION
+# ==========================================
+
+# Re-export для зручності
+get_db_session = get_db
+
+# ==========================================
 # EXPORTS
 # ==========================================
 
@@ -402,4 +488,5 @@ __all__ = [
     "FilterParams",
     "RateLimitParams",
     "get_db",
+    "get_db_session",
 ]

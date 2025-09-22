@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     CLICKHOUSE_USER: str = Field("webuser", env="CLICKHOUSE_USER")
     CLICKHOUSE_PASSWORD: str = Field("password123", env="CLICKHOUSE_PASSWORD")
     
+    
     # Redis
     REDIS_HOST: str = Field("localhost", env="REDIS_HOST")
     REDIS_PORT: int = Field(6379, env="REDIS_PORT")

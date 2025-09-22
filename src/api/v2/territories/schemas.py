@@ -207,6 +207,63 @@ class H3GridResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="allow")
 
 
+class HexagonDetailsResponse(BaseModel):
+    """Детальна інформація про H3 гексагон"""
+    h3_index: str = Field(..., description="H3 індекс")
+    resolution: int = Field(..., description="H3 резолюція")
+    
+    # Локація
+    center_lat: float = Field(..., description="Широта центру")
+    center_lon: float = Field(..., description="Довгота центру")
+    address: Optional[str] = Field(None, description="Адреса")
+    
+    # Метрики з percentiles
+    metrics: Dict[str, Dict[str, Union[float, int]]] = Field(
+        ...,
+        description="Метрики з value та percentile"
+    )
+    
+    # POI аналіз
+    poi_summary: Dict[str, int] = Field(
+        default_factory=dict, 
+        description="POI по категоріях"
+    )
+    nearby_competitors: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Список найближчих конкурентів"
+    )
+    
+    # Доступність
+    transport_access: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Доступність транспорту"
+    )
+    walkability_score: Optional[float] = Field(
+        None,
+        ge=0, 
+        le=1,
+        description="Оцінка пішохідної доступності"
+    )
+    
+    # Демографія
+    demographics: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Демографічні показники"
+    )
+    
+    # ML insights
+    insights: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="ML аналітика та прогнози"
+    )
+    recommendations: List[str] = Field(
+        default_factory=list,
+        description="Рекомендації на основі аналізу"
+    )
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ================== POI Models ==================
 
 class POIResponse(BaseModel):

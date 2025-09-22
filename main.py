@@ -6,8 +6,16 @@ Version: 2.0.0
 
 import os
 import sys
+import time
+import argparse
 from pathlib import Path
 from typing import Dict, Any
+from datetime import datetime
+import logging
+
+# Встановлюємо кодування для Windows
+if sys.platform == 'win32':
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # Додаємо src до Python path для правильних імпортів
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -19,53 +27,127 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import uvicorn
-import logging
-from datetime import datetime
-
-# На початку файлу, після імпортів
-import io
-import sys
-
-# Fix для Windows консолі
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # ================== Logging Setup ==================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('georetail.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Налаштування логування з UTF-8
+def setup_logging():
+    """Налаштування логування з підтримкою UTF-8"""
+    # Отримуємо root logger
+    root_logger = logging.getLogger()
+    
+    # Якщо вже є handlers, не переналаштовуємо
+    if not root_logger.handlers:
+        # Створюємо console handler
+        console_handler = logging.StreamHandler()
+        
+        # Файловий handler з UTF-8
+        try:
+            file_handler = logging.FileHandler('georetail.log', encoding='utf-8', mode='a')
+        except:
+            file_handler = logging.FileHandler('georetail.log', mode='a')
+        
+        # Форматування
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        console_handler.setFormatter(formatter)
+        file_handler.setFormatter(formatter)
+        
+        # Додаємо handlers
+        root_logger.addHandler(console_handler)
+        root_logger.addHandler(file_handler)
+        root_logger.setLevel(logging.INFO)
+    
+    return logging.getLogger(__name__)
+
+# Ініціалізуємо логування
+logger = setup_logging()
+
+# ================== Diagnostic Functions ==================
+
+def find_changing_files(seconds_ago: int = 10):
+    """
+    Знайти файли що змінювалися останні N секунд
+    Для діагностики проблеми з watchfiles
+    """
+    print("\n" + "=" * 60)
+    print(f"[DIAGNOSTIC] Checking for files modified in last {seconds_ago} seconds")
+    print("=" * 60)
+    
+    current_time = time.time()
+    base_path = Path.cwd()
+    modified_files = []
+    
+    # Директорії які ігноруємо
+    ignore_dirs = {'.git', '__pycache__', '.vscode', '.idea', 'node_modules', '.pytest_cache'}
+    ignore_extensions = {'.pyc', '.pyo', '.log', '.tmp', '.db', '.sqlite', '.pid'}
+    
+    for root, dirs, files in os.walk(base_path):
+        # Видаляємо ігноровані директорії зі списку для обходу
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+        
+        root_path = Path(root)
+        
+        # Пропускаємо якщо це ігнорована директорія
+        if any(ignored in str(root_path) for ignored in ignore_dirs):
+            continue
+            
+        for file in files:
+            filepath = root_path / file
+            
+            # Пропускаємо файли з ігнорованими розширеннями
+            if filepath.suffix in ignore_extensions:
+                continue
+                
+            try:
+                stat = filepath.stat()
+                mtime = stat.st_mtime
+                
+                if current_time - mtime < seconds_ago:
+                    relative_path = filepath.relative_to(base_path)
+                    modified_files.append({
+                        'path': str(relative_path),
+                        'seconds_ago': int(current_time - mtime),
+                        'size': stat.st_size
+                    })
+            except Exception as e:
+                pass  # Ігноруємо помилки доступу
+    
+    if modified_files:
+        print(f"Found {len(modified_files)} recently modified files:")
+        for file_info in sorted(modified_files, key=lambda x: x['seconds_ago']):
+            print(f"  - {file_info['path']} (modified {file_info['seconds_ago']}s ago, size: {file_info['size']} bytes)")
+    else:
+        print("No recently modified files found")
+    
+    print("=" * 60 + "\n")
+    return modified_files
 
 # ================== Import Routers ==================
 
 try:
     # Auth router (existing)
     from src.api.endpoints.auth_endpoints import router as auth_router
-    logger.info("✅ Auth router imported")
+    logger.info("[OK] Auth router imported")
 except ImportError as e:
-    logger.warning(f"⚠️ Auth router not found: {e}")
+    logger.warning(f"[WARNING] Auth router not found: {e}")
     auth_router = None
 
 try:
     # Territories router (UC1)
     from src.api.v2.territories.router import router as territories_router
-    logger.info("✅ Territories router imported")
+    logger.info("[OK] Territories router imported")
 except ImportError as e:
-    logger.warning(f"⚠️ Territories router not found: {e}")
+    logger.warning(f"[WARNING] Territories router not found: {e}")
     territories_router = None
 
 try:
     # Database initialization
     from src.core.rbac_database import init_database, close_database, db_manager
-    logger.info("✅ Database module imported")
+    logger.info("[OK] Database module imported")
 except ImportError as e:
-    logger.warning(f"⚠️ Database module not found: {e}")
+    logger.warning(f"[WARNING] Database module not found: {e}")
     init_database = None
     close_database = None
     db_manager = None
@@ -73,9 +155,9 @@ except ImportError as e:
 try:
     # Configuration
     from src.core.config import settings
-    logger.info("✅ Configuration imported")
+    logger.info("[OK] Configuration imported")
 except ImportError:
-    logger.warning("⚠️ Configuration not found, using defaults")
+    logger.warning("[WARNING] Configuration not found, using defaults")
     # Default settings if config not found
     class Settings:
         APP_NAME = "GeoRetail Analytics"
@@ -84,7 +166,6 @@ except ImportError:
         CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
         API_PREFIX = "/api/v2"
     settings = Settings()
-
 
 # ================== Startup/Shutdown Events ==================
 
@@ -96,71 +177,64 @@ async def lifespan(app: FastAPI):
     """
     # ===== STARTUP =====
     logger.info("=" * 50)
-    logger.info("🚀 Starting GeoRetail API...")
-    logger.info(f"📅 Start time: {datetime.now()}")
-    logger.info(f"🐍 Python version: {sys.version}")
-    logger.info(f"📁 Working directory: {Path.cwd()}")
+    logger.info("[START] Starting GeoRetail API...")
+    logger.info(f"[TIME] Start time: {datetime.now()}")
+    logger.info(f"[PYTHON] Version: {sys.version}")
+    logger.info(f"[PATH] Working directory: {Path.cwd()}")
     logger.info("=" * 50)
     
     # Initialize database
     if init_database:
         try:
             init_database()
-            logger.info("✅ Database initialized successfully")
+            logger.info("[OK] Database initialized successfully")
             
             # Test connection
             if db_manager and hasattr(db_manager, 'test_connection'):
                 if db_manager.test_connection():
-                    logger.info("✅ Database connection verified")
+                    logger.info("[OK] Database connection verified")
                 else:
-                    logger.warning("⚠️ Database connection test failed")
+                    logger.warning("[WARNING] Database connection test failed")
         except Exception as e:
-            logger.error(f"❌ Database initialization failed: {e}")
-            logger.info("⚠️ Continuing without database...")
+            logger.error(f"[ERROR] Database initialization failed: {e}")
+            logger.info("[WARNING] Continuing without database...")
     else:
-        logger.warning("⚠️ Database module not available")
+        logger.warning("[WARNING] Database module not available")
     
-    # Initialize other services if needed
-    # - Redis cache
-    # - ClickHouse analytics
-    # - ML models loading
-    
-    logger.info("✅ Application startup complete")
+    logger.info("[OK] Application startup complete")
     logger.info("=" * 50)
     
     yield  # Application runs here
     
     # ===== SHUTDOWN =====
     logger.info("=" * 50)
-    logger.info("🛑 Shutting down GeoRetail API...")
+    logger.info("[STOP] Shutting down GeoRetail API...")
     
     # Close database connections
     if close_database:
         try:
             close_database()
-            logger.info("✅ Database connections closed")
+            logger.info("[OK] Database connections closed")
         except Exception as e:
-            logger.error(f"❌ Error closing database: {e}")
+            logger.error(f"[ERROR] Error closing database: {e}")
     
-    # Cleanup other resources
-    logger.info("✅ Cleanup completed")
-    logger.info(f"📅 Shutdown time: {datetime.now()}")
+    logger.info("[OK] Cleanup completed")
+    logger.info(f"[TIME] Shutdown time: {datetime.now()}")
     logger.info("=" * 50)
-
 
 # ================== Create FastAPI App ==================
 
 app = FastAPI(
     title="GeoRetail Analytics API",
     description="""
-    🗺️ Геоаналітична платформа для роздрібної торгівлі
+    Геоаналітична платформа для роздрібної торгівлі
     
     ## Features
-    - 🔍 UC1 Explorer Mode - візуальний аналіз територій
-    - 📊 Bivariate choropleth maps
-    - 🔷 H3 hexagon analytics
-    - 🏪 Competition analysis
-    - 📈 ML-powered predictions
+    - UC1 Explorer Mode - візуальний аналіз територій
+    - Bivariate choropleth maps
+    - H3 hexagon analytics
+    - Competition analysis
+    - ML-powered predictions
     
     ## Modules
     - **Territories** - робота з адмінодиницями та H3 гексагонами
@@ -174,7 +248,6 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan
 )
-
 
 # ================== Middleware Configuration ==================
 
@@ -201,7 +274,6 @@ app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["localhost", "127.0.0.1", "*.georetail.local"]
 )
-
 
 # ================== Exception Handlers ==================
 
@@ -243,7 +315,6 @@ async def forbidden_handler(request: Request, exc: HTTPException):
         }
     )
 
-
 # ================== Root & Utility Endpoints ==================
 
 @app.get("/", include_in_schema=False)
@@ -282,7 +353,6 @@ async def health_check() -> Dict[str, Any]:
     health_status = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "uptime": "calculating...",
         "services": {
             "api": "operational",
             "database": "checking...",
@@ -307,21 +377,69 @@ async def health_check() -> Dict[str, Any]:
     else:
         health_status["services"]["database"] = "not configured"
     
-    # Check Redis (if available)
+    # Check ClickHouse (critical for analytics)
     try:
-        from src.database.connections import redis_connection
-        # Implement Redis health check
-        health_status["services"]["redis"] = "not implemented"
+        from clickhouse_driver import Client
+        from src.core.config import settings
+        
+        # Спробуємо різні варіанти підключення
+        connections_to_try = [
+            # Спочатку з config
+            {
+                'host': settings.CLICKHOUSE_HOST,
+                'port': settings.CLICKHOUSE_PORT,
+                'database': settings.CLICKHOUSE_DB,
+                'user': getattr(settings, 'CLICKHOUSE_USER', 'webuser'),
+                'password': getattr(settings, 'CLICKHOUSE_PASSWORD', 'password123')
+            },
+            # Потім default без пароля
+            {
+                'host': settings.CLICKHOUSE_HOST,
+                'port': settings.CLICKHOUSE_PORT,
+                'database': settings.CLICKHOUSE_DB,
+                'user': 'default',
+                'password': ''
+            }
+        ]
+        
+        client = None
+        for conn_params in connections_to_try:
+            try:
+                client = Client(**conn_params)
+                result = client.execute('SELECT 1')
+                # Якщо дійшли сюди - підключення успішне
+                health_status["services"]["clickhouse"] = "healthy"
+                
+                # Додаткова перевірка таблиць
+                try:
+                    tables = client.execute('SHOW TABLES')
+                    if tables:
+                        health_status["services"]["clickhouse"] = f"healthy ({len(tables)} tables, user: {conn_params['user']})"
+                    else:
+                        health_status["services"]["clickhouse"] = f"healthy (no tables yet, user: {conn_params['user']})"
+                except:
+                    health_status["services"]["clickhouse"] = f"healthy (connected as {conn_params['user']})"
+                break
+            except Exception as e:
+                continue  # Спробуємо наступний варіант
+                
+        if not client:
+            # Якщо жоден варіант не спрацював
+            health_status["services"]["clickhouse"] = "auth failed (try default user with no password)"
+            health_status["status"] = "degraded"
+            logger.error("[ERROR] ClickHouse: не вдалося підключитися. Спробуйте default користувача")
+            
     except ImportError:
-        health_status["services"]["redis"] = "not configured"
+        health_status["services"]["clickhouse"] = "driver not installed"
+        health_status["status"] = "degraded"
+        logger.warning("[WARNING] clickhouse-driver not installed. Run: pip install clickhouse-driver")
+    except Exception as e:
+        health_status["services"]["clickhouse"] = f"error: {str(e)[:100]}"
+        health_status["status"] = "degraded"
+        logger.error(f"[ERROR] ClickHouse connection failed: {e}")
     
-    # Check ClickHouse (if available)
-    try:
-        from src.database.connections import clickhouse
-        # Implement ClickHouse health check
-        health_status["services"]["clickhouse"] = "not implemented"
-    except ImportError:
-        health_status["services"]["clickhouse"] = "not configured"
+    # Redis check (not critical)
+    health_status["services"]["redis"] = "not configured"
     
     return health_status
 
@@ -340,19 +458,18 @@ async def metrics():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-
 # ================== Register API Routers ==================
 
 # Auth endpoints
 if auth_router:
     app.include_router(
         auth_router,
-        prefix="/api/v2",
+        
         tags=["authentication"]
     )
-    logger.info("✅ Auth router registered")
+    logger.info("[OK] Auth router registered")
 else:
-    logger.warning("⚠️ Auth router not registered")
+    logger.warning("[WARNING] Auth router not registered")
 
 # Territories endpoints (UC1)
 if territories_router:
@@ -360,29 +477,16 @@ if territories_router:
         territories_router,
         tags=["territories", "explorer"]
     )
-    logger.info("✅ Territories router registered")
+    logger.info("[OK] Territories router registered")
 else:
-    logger.warning("⚠️ Territories router not registered")
-
-# Future routers (placeholder)
-# from src.api.v2.insights.router import router as insights_router
-# app.include_router(insights_router, tags=["insights"])
-
-# from src.api.v2.decisions.router import router as decisions_router
-# app.include_router(decisions_router, tags=["decisions"])
-
-# from src.api.v2.portfolio.router import router as portfolio_router
-# app.include_router(portfolio_router, tags=["portfolio"])
-
+    logger.warning("[WARNING] Territories router not registered")
 
 # ================== Static Files (if needed) ==================
 
-# Serve static files if frontend is built
 static_path = Path("frontend/dist")
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
-    logger.info(f"✅ Static files mounted from {static_path}")
-
+    logger.info(f"[OK] Static files mounted from {static_path}")
 
 # ================== Main Entry Point ==================
 
@@ -392,34 +496,88 @@ if __name__ == "__main__":
     For production use: gunicorn or systemd service
     """
     
-    # Get configuration from environment or defaults
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    reload = os.getenv("RELOAD", "true").lower() == "true"
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='GeoRetail API Server')
+    parser.add_argument('--no-reload', action='store_true', 
+                       help='Disable auto-reload')
+    parser.add_argument('--diagnose', action='store_true',
+                       help='Run diagnostics for file changes')
+    parser.add_argument('--port', type=int, default=8000,
+                       help='Port to run server on')
+    parser.add_argument('--host', default='0.0.0.0',
+                       help='Host to run server on')
+    args = parser.parse_args()
+    
+    # Get configuration
+    host = args.host
+    port = args.port
+    reload = not args.no_reload and os.getenv("RELOAD", "true").lower() == "true"
     workers = int(os.getenv("WORKERS", "1"))
     log_level = os.getenv("LOG_LEVEL", "info")
     
+    # Run diagnostics if requested
+    if args.diagnose:
+        print("[DIAGNOSTIC MODE]")
+        print("Checking for file changes...")
+        
+        # Check initial state
+        find_changing_files(5)
+        
+        # Wait and check again
+        print("Waiting 5 seconds...")
+        time.sleep(5)
+        find_changing_files(5)
+        
+        print("Waiting another 5 seconds...")
+        time.sleep(5)
+        find_changing_files(5)
+        
+        print("\n[DIAGNOSTIC COMPLETE]")
+        print("Now starting server with reload disabled for testing...")
+        reload = False
+    
     print("=" * 60)
-    print(" 🚀 GeoRetail Analytics API")
+    print(" [GEORETAIL] Analytics API Server")
     print("=" * 60)
-    print(f" 📡 Server:   http://{host}:{port}")
-    print(f" 📚 Docs:     http://{host}:{port}/docs")
-    print(f" 📘 ReDoc:    http://{host}:{port}/redoc")
-    print(f" 🔄 Reload:   {reload}")
-    print(f" 👷 Workers:  {workers}")
-    print(f" 📝 Log level: {log_level}")
+    print(f" [SERVER]   http://{host}:{port}")
+    print(f" [DOCS]     http://{host}:{port}/docs")
+    print(f" [REDOC]    http://{host}:{port}/redoc")
+    print(f" [RELOAD]   {reload}")
+    print(f" [WORKERS]  {workers}")
+    print(f" [LOG]      {log_level}")
     print("=" * 60)
     print(" Press CTRL+C to stop the server")
     print("=" * 60)
     
-    # Run with uvicorn
-    uvicorn.run(
-        "main:app",  # app instance
-        host=host,
-        port=port,
-        reload=reload,
-        workers=workers if not reload else 1,  # Multiple workers only without reload
-        log_level=log_level,
-        access_log=True,
-        use_colors=True
-    )
+    try:
+        # Configure uvicorn based on reload setting
+        if reload:
+            # З reload - обмежуємо директорії для спостереження
+            uvicorn.run(
+                "main:app",
+                host=host,
+                port=port,
+                reload=True,
+                reload_dirs=["src", "api"],  # Тільки ці папки
+                workers=1,  # reload працює тільки з 1 воркером
+                log_level=log_level,
+                access_log=True,
+                use_colors=True
+            )
+        else:
+            # Без reload - можемо використовувати кілька воркерів
+            uvicorn.run(
+                "main:app",
+                host=host,
+                port=port,
+                reload=False,
+                workers=workers,
+                log_level=log_level,
+                access_log=True,
+                use_colors=True
+            )
+    except KeyboardInterrupt:
+        logger.info("[STOP] Server stopped by user")
+    except Exception as e:
+        logger.error(f"[ERROR] Server error: {e}")
+        raise

@@ -1,0 +1,11 @@
+# .watchfilesignore
+*.log
+__pycache__/
+*.pyc
+.git/
+.idea/
+.vscode/
+logs/
+*.tmp
+*.db
+*.sqlite

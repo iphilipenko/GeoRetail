@@ -1,17 +1,23 @@
 """
 Territories Router for API v2
 Handles Explorer Mode endpoints for UC1
-Complete implementation with all endpoints
+UPDATED: Fixed type hints - using RBACUser instead of dict
 """
 
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 from datetime import datetime
+import logging
 
-# Імпорти з префіксом src. (коли main.py в корені)
+# Імпорти моделей
+from src.models.rbac_models import RBACUser
+
+# Імпорти dependencies
 from src.api.v2.core.dependencies import get_current_user, require_permission
 from src.core.rbac_database import get_db as get_db_session
+
+# Імпорти schemas
 from src.api.v2.territories.schemas import (
     AdminUnitResponse,
     AdminMetricsResponse, 
@@ -24,7 +30,12 @@ from src.api.v2.territories.schemas import (
     CompetitorResponse,
     TerritoryStatsResponse
 )
+
+# Імпорт сервісів
 from src.api.v2.territories.services import TerritoriesService
+
+# Налаштування логування
+logger = logging.getLogger(__name__)
 
 # ==========================================
 # ROUTER SETUP
@@ -57,7 +68,7 @@ async def get_all_admin_geometries(
     level: Optional[str] = Query("all", description="Level: oblast, raion, hromada, all"),
     simplified: bool = Query(True, description="Simplified geometries for faster loading"),
     bounds: Optional[str] = Query(None, description="Bounding box: minLon,minLat,maxLon,maxLat"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED: RBACUser instead of dict
     _: Any = Depends(require_permission("core.view_admin_units")),
     db: Session = Depends(get_db_session)
 ) -> List[AdminUnitResponse]:
@@ -65,6 +76,8 @@ async def get_all_admin_geometries(
     Loads all admin units at app startup.
     Used for initial map initialization.
     """
+    logger.info(f"User {current_user.email} accessing admin geometries")
+    
     try:
         return await territories_service.get_admin_geometries(
             db=db,
@@ -73,6 +86,7 @@ async def get_all_admin_geometries(
             bounds=bounds
         )
     except Exception as e:
+        logger.error(f"Error getting admin geometries: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -86,7 +100,7 @@ async def get_all_admin_metrics(
     metric_x: str = Query("population", description="Metric for X axis"),
     metric_y: str = Query("income_index", description="Metric for Y axis"),
     normalize: bool = Query(True, description="Normalize metrics"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_admin_units")),
     db: Session = Depends(get_db_session)
 ) -> List[AdminMetricsResponse]:
@@ -94,6 +108,8 @@ async def get_all_admin_metrics(
     Loads all metrics for admin units.
     Includes pre-calculated bivariate bins for fast visualization.
     """
+    logger.info(f"User {current_user.email} accessing admin metrics")
+    
     try:
         return await territories_service.get_admin_metrics(
             db=db,
@@ -102,6 +118,7 @@ async def get_all_admin_metrics(
             normalize=normalize
         )
     except Exception as e:
+        logger.error(f"Error getting admin metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -114,11 +131,13 @@ async def get_admin_unit(
     koatuu_code: str = Path(..., description="KOATUU code of admin unit"),
     include_children: bool = Query(False, description="Include child units"),
     include_stats: bool = Query(True, description="Include statistics"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_admin_units")),
     db: Session = Depends(get_db_session)
 ) -> AdminUnitResponse:
     """Get detailed information about specific admin unit."""
+    logger.info(f"User {current_user.email} accessing admin unit: {koatuu_code}")
+    
     try:
         result = await territories_service.get_admin_unit_by_code(
             db=db,
@@ -132,6 +151,7 @@ async def get_admin_unit(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error getting admin unit {koatuu_code}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -149,7 +169,7 @@ async def get_h3_grid(
     bounds: str = Query(..., description="Bounding box: minLon,minLat,maxLon,maxLat"),
     resolution: int = Query(7, ge=4, le=10, description="H3 resolution (4-10)"),
     metric: Optional[str] = Query(None, description="Metric to include"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     db: Session = Depends(get_db_session)
 ) -> List[H3GridResponse]:
     """
@@ -158,15 +178,19 @@ async def get_h3_grid(
     """
     # Перевірка дозволів для високих резолюцій
     if resolution > 8:
-        _ = await require_permission("core.view_h3_detailed")(
-            current_user=current_user, 
-            db=db
-        )
+        if not current_user.is_superuser:
+            # Додаткова перевірка для високих резолюцій
+            _ = await require_permission("core.view_h3_detailed")(
+                current_user=current_user, 
+                db=db
+            )
+            logger.info(f"User {current_user.email} accessing H3 detailed resolution {resolution}")
     else:
         _ = await require_permission("core.view_h3_basic")(
             current_user=current_user,
             db=db
         )
+        logger.info(f"User {current_user.email} accessing H3 basic resolution {resolution}")
     
     try:
         return await territories_service.get_h3_grid(
@@ -176,6 +200,7 @@ async def get_h3_grid(
             metric=metric
         )
     except Exception as e:
+        logger.error(f"Error getting H3 grid: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -189,13 +214,15 @@ async def get_h3_details(
     include_neighbors: bool = Query(False, description="Include neighbor hexagons"),
     include_poi: bool = Query(False, description="Include POI data"),
     include_competition: bool = Query(False, description="Include competition data"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_h3_detailed")),
     db: Session = Depends(get_db_session)
 ) -> H3HexagonResponse:
     """
     Get detailed information about specific H3 hexagon.
     """
+    logger.info(f"User {current_user.email} accessing H3 details: {h3_index}")
+    
     try:
         result = await territories_service.get_h3_details(
             db=db,
@@ -210,6 +237,7 @@ async def get_h3_details(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error getting H3 details for {h3_index}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -227,7 +255,7 @@ async def search_poi(
     h3_index: Optional[str] = Query(None, description="H3 hexagon"),
     category: Optional[str] = Query(None, description="POI category"),
     limit: int = Query(100, le=500, description="Max results"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_h3_basic")),
     db: Session = Depends(get_db_session)
 ) -> List[POIResponse]:
@@ -238,6 +266,8 @@ async def search_poi(
             detail="Either bounds or h3_index must be provided"
         )
     
+    logger.info(f"User {current_user.email} searching POIs")
+    
     try:
         return await territories_service.search_poi(
             db=db,
@@ -247,6 +277,7 @@ async def search_poi(
             limit=limit
         )
     except Exception as e:
+        logger.error(f"Error searching POIs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -260,11 +291,13 @@ async def find_competitors(
     lon: float = Query(..., description="Longitude"),
     radius_km: float = Query(5.0, description="Search radius in km"),
     format_type: Optional[str] = Query(None, description="Store format filter"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("competition.view_competitors")),
     db: Session = Depends(get_db_session)
 ) -> List[CompetitorResponse]:
     """Find competitor stores within radius."""
+    logger.info(f"User {current_user.email} searching competitors at {lat},{lon}")
+    
     try:
         return await territories_service.find_nearby_competitors(
             db=db,
@@ -274,6 +307,7 @@ async def find_competitors(
             format_type=format_type
         )
     except Exception as e:
+        logger.error(f"Error finding competitors: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -288,7 +322,7 @@ async def find_competitors(
 )
 async def analyze_territory(
     request: TerritorySearchRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_h3_detailed")),
     db: Session = Depends(get_db_session)
 ) -> TerritoryStatsResponse:
@@ -296,6 +330,8 @@ async def analyze_territory(
     Complex analysis of territory potential.
     Combines multiple data sources and metrics.
     """
+    logger.info(f"User {current_user.email} analyzing territory")
+    
     try:
         return await territories_service.analyze_territory(
             db=db,
@@ -304,6 +340,7 @@ async def analyze_territory(
             metrics=request.metrics
         )
     except Exception as e:
+        logger.error(f"Error analyzing territory: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -315,11 +352,13 @@ async def analyze_territory(
 async def get_territory_stats(
     koatuu_code: str = Path(..., description="KOATUU code"),
     period: Optional[str] = Query("month", description="Time period"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_admin_units")),
     db: Session = Depends(get_db_session)
 ) -> TerritoryStatsResponse:
     """Get aggregated statistics for territory."""
+    logger.info(f"User {current_user.email} getting stats for {koatuu_code}")
+    
     try:
         return await territories_service.get_territory_statistics(
             db=db,
@@ -327,6 +366,7 @@ async def get_territory_stats(
             period=period
         )
     except Exception as e:
+        logger.error(f"Error getting territory stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -347,7 +387,10 @@ async def get_bivariate_config(
     """
     Get configuration for bivariate choropleth visualization.
     Includes color matrix and bin thresholds.
+    No auth required - public configuration.
     """
+    logger.info(f"Getting bivariate config for {metric_x} vs {metric_y}")
+    
     try:
         return territories_service.get_bivariate_config(
             metric_x=metric_x,
@@ -355,6 +398,7 @@ async def get_bivariate_config(
             bins=bins
         )
     except Exception as e:
+        logger.error(f"Error getting bivariate config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -366,10 +410,16 @@ async def get_bivariate_config(
 async def get_available_metrics(
     category: Optional[str] = Query(None, description="Metric category")
 ) -> Dict[str, Any]:
-    """Get list of all available metrics for visualization."""
+    """
+    Get list of all available metrics for visualization.
+    No auth required - public configuration.
+    """
+    logger.info(f"Getting available metrics for category: {category}")
+    
     try:
         return territories_service.get_available_metrics(category=category)
     except Exception as e:
+        logger.error(f"Error getting available metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -384,7 +434,7 @@ async def get_available_metrics(
 )
 async def search_territories(
     request: TerritorySearchRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.view_admin_units")),
     db: Session = Depends(get_db_session)
 ) -> TerritorySearchResponse:
@@ -392,6 +442,8 @@ async def search_territories(
     Advanced search with multiple filters and criteria.
     Supports text search, metric filters, and spatial queries.
     """
+    logger.info(f"User {current_user.email} searching territories: {request.query}")
+    
     try:
         return await territories_service.search_territories(
             db=db,
@@ -402,6 +454,7 @@ async def search_territories(
             offset=request.offset
         )
     except Exception as e:
+        logger.error(f"Error searching territories: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -418,11 +471,13 @@ async def export_data(
     koatuu_code: Optional[str] = Query(None, description="Territory code"),
     bounds: Optional[str] = Query(None, description="Bounding box"),
     metrics: Optional[str] = Query(None, description="Comma-separated metrics"),
-    current_user: dict = Depends(get_current_user),
+    current_user: RBACUser = Depends(get_current_user),  # FIXED
     _: Any = Depends(require_permission("core.export_data")),
     db: Session = Depends(get_db_session)
 ):
     """Export territory data in various formats."""
+    logger.info(f"User {current_user.email} exporting data as {format}")
+    
     try:
         return await territories_service.export_territory_data(
             db=db,
@@ -432,6 +487,7 @@ async def export_data(
             metrics=metrics.split(",") if metrics else None
         )
     except Exception as e:
+        logger.error(f"Error exporting data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -444,7 +500,10 @@ async def export_data(
     summary="Territory service health check"
 )
 async def health_check() -> Dict[str, str]:
-    """Check if territory services are operational."""
+    """
+    Check if territory services are operational.
+    No auth required - health check endpoint.
+    """
     return {
         "status": "healthy",
         "service": "territories",
