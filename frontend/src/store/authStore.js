@@ -1,0 +1,4 @@
+﻿// authStore module
+
+export default {};
+

@@ -1,324 +1,278 @@
 """
-GeoRetail FastAPI Application
-Main entry point for the Core Infrastructure API
+GeoRetail API v2
+Main FastAPI application with territories and auth endpoints
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import uvicorn
 import os
-import sys
-from pathlib import Path
+import time
+from contextlib import asynccontextmanager
+from typing import Any, Dict
 
-# Add src to path for imports
-src_path = Path(__file__).parent
-sys.path.append(str(src_path))
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-# Import existing modules (preserving your work)
-try:
-    # Try to import existing modules from your current structure
-    from graph.neo4j_client import geo_neo4j_client
-    from data.osm_extractor import geo_osm_extractor
-except ImportError as e:
-    print(f"Note: Some existing modules not found: {e}")
-    print("This is normal during initial setup")
+# Import routers
+from api.endpoints.auth_endpoints import router as auth_router
+from api.v2.territories.router import router as territories_router
 
-# Import H3 visualization endpoints
-try:
-    from api.endpoints.h3_visualization import router as h3_viz_router
-    from api.endpoints.h3_modal_endpoints import router as h3_modal_router
-    from api.endpoints.test_database_endpoint import router as test_db_router
-    H3_ENDPOINTS_AVAILABLE = True
-except ImportError as e:
-    print(f"H3 endpoints not available: {e}")
-    H3_ENDPOINTS_AVAILABLE = False
+# Import database connections
+from database.connections import init_databases, close_databases
 
-# Import new Core Infrastructure modules
-try:
-    from api.endpoints import health, screening, analysis
-    from core.config import settings
-except ImportError:
-    # These will be created as we build out the infrastructure
-    print("Core Infrastructure modules will be available after full setup")
+# Import configuration
+from core.config import settings
 
-# Create FastAPI application
+
+# ================== Application Lifespan ==================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Управління життєвим циклом додатку
+    """
+    # Startup
+    print("🚀 Starting GeoRetail API v2...")
+    
+    # Ініціалізація баз даних
+    await init_databases()
+    
+    print("✅ Application started successfully!")
+    print(f"📍 API available at http://localhost:{settings.PORT}")
+    print(f"📚 Documentation at http://localhost:{settings.PORT}/docs")
+    
+    yield
+    
+    # Shutdown
+    print("🔄 Shutting down GeoRetail API...")
+    
+    # Закриття підключень
+    await close_databases()
+    
+    print("✅ Application shut down successfully!")
+
+
+# ================== Application Instance ==================
+
 app = FastAPI(
-    title="GeoRetail Core Infrastructure",
-    description="""
-    Advanced retail location intelligence system using:
-    • H3 hexagonal spatial indexing
-    • Graph neural networks and embeddings
-    • Competitive analysis and market saturation
-    • Revenue forecasting and risk assessment
-    """,
+    title="GeoRetail API v2",
+    description="Territory Intelligence Platform for Retail Analytics",
     version="2.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    lifespan=lifespan
 )
 
-# Configure CORS
+
+# ================== Middleware ==================
+
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],  # React dev servers
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Request-ID"]
 )
 
-# ==========================================
-# REGISTER H3 ENDPOINTS
-# ==========================================
+# Gzip compression for large responses
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000  # Compress responses larger than 1KB
+)
 
-if H3_ENDPOINTS_AVAILABLE:
-    # Register H3 visualization endpoints
-    app.include_router(h3_viz_router)
-    app.include_router(h3_modal_router)
-    app.include_router(test_db_router)
-    print("✅ H3 visualization, modal, and database test endpoints registered")
-else:
-    print("⚠️ H3 endpoints not available - check imports")
+# Trusted host middleware (security)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1", "*.georetail.com"]
+)
 
-# ==========================================
-# HEALTH CHECK ENDPOINTS
-# ==========================================
 
-@app.get("/", tags=["System"])
-async def root():
-    """Root endpoint with system information"""
-    return {
-        "message": "GeoRetail Core Infrastructure",
-        "version": "2.0.0",
-        "status": "operational",
-        "docs": "/docs",
-        "features": [
-            "H3 spatial indexing",
-            "Graph embeddings", 
-            "Competitive analysis",
-            "Revenue forecasting"
-        ]
-    }
+# ================== Request/Response Middleware ==================
 
-@app.get("/health", tags=["System"])
-async def health_check():
-    """Comprehensive health check for all system components"""
-    
-    health_status = {
-        "status": "healthy",
-        "timestamp": "2024-01-01T00:00:00Z",  # Will be updated with real timestamp
-        "services": {}
-    }
-    
-    # Check existing services (from your current setup)
-    try:
-        # Neo4j connection check
-        result = geo_neo4j_client.execute_query("RETURN 'healthy' as status")
-        health_status["services"]["neo4j"] = {
-            "status": "healthy" if result else "unhealthy",
-            "message": "Neo4j connection successful"
-        }
-    except Exception as e:
-        health_status["services"]["neo4j"] = {
-            "status": "unhealthy", 
-            "message": f"Neo4j connection failed: {str(e)}"
-        }
-    
-    # Check OSM extractor
-    try:
-        # Simple test of OSM functionality
-        health_status["services"]["osm_extractor"] = {
-            "status": "healthy",
-            "message": "OSM extractor available"
-        }
-    except Exception as e:
-        health_status["services"]["osm_extractor"] = {
-            "status": "unhealthy",
-            "message": f"OSM extractor error: {str(e)}"
-        }
-    
-    # Check new infrastructure components (will be added progressively)
-    health_status["services"]["postgis"] = {"status": "pending", "message": "Not yet configured"}
-    health_status["services"]["redis"] = {"status": "pending", "message": "Not yet configured"}
-    health_status["services"]["h3_processor"] = {"status": "pending", "message": "Not yet configured"}
-    
-    # Overall status
-    unhealthy_services = [
-        service for service, info in health_status["services"].items() 
-        if info["status"] == "unhealthy"
-    ]
-    
-    if unhealthy_services:
-        health_status["status"] = "degraded"
-        health_status["unhealthy_services"] = unhealthy_services
-    
-    return health_status
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    """Додає час обробки запиту в headers"""
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = f"{process_time:.3f}"
+    return response
 
-# ==========================================
-# LEGACY ENDPOINTS (preserving existing functionality)
-# ==========================================
 
-@app.get("/legacy/test-neo4j", tags=["Legacy"])
-async def test_neo4j_connection():
-    """Test existing Neo4j setup"""
-    try:
-        result = geo_neo4j_client.execute_query("RETURN 'Connection successful' as message")
-        return {"status": "success", "result": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Neo4j connection failed: {str(e)}")
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Додає унікальний ID запиту для трекінгу"""
+    import uuid
+    request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
-@app.get("/legacy/test-osm", tags=["Legacy"])
-async def test_osm_extraction():
-    """Test existing OSM extraction"""
-    try:
-        # Test with Kyiv center coordinates
-        lat, lon = 50.4501, 30.5234
-        location_data = geo_osm_extractor.extract_location_data(lat, lon)
-        
-        return {
-            "status": "success",
-            "location": {"lat": lat, "lon": lon},
-            "pois_found": len(location_data.get('pois', [])),
-            "buildings_count": location_data.get('buildings', {}).get('count', 0)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OSM extraction failed: {str(e)}")
 
-# ==========================================
-# NEW CORE INFRASTRUCTURE ENDPOINTS
-# ==========================================
+# ================== Exception Handlers ==================
 
-@app.post("/api/v1/screening/region", tags=["H3 Screening"])
-async def screen_region():
-    """H3 region screening endpoint (to be implemented)"""
-    return {
-        "status": "not_implemented",
-        "message": "H3 screening will be available after PostGIS setup",
-        "todo": [
-            "Setup PostGIS with H3 extension",
-            "Import Ukraine H3 grid",
-            "Implement screening algorithm"
-        ]
-    }
-
-@app.post("/api/v1/screening/location", tags=["Location Analysis"])
-async def analyze_location():
-    """Single location analysis endpoint (to be implemented)"""
-    return {
-        "status": "not_implemented", 
-        "message": "Location analysis will integrate existing OSM + new H3 processing"
-    }
-
-@app.get("/api/v1/competitors/analyze", tags=["Competitive Analysis"])
-async def analyze_competitors():
-    """Competitive analysis endpoint (to be implemented)"""
-    return {
-        "status": "not_implemented",
-        "message": "Will use existing Neo4j graph + new competitive algorithms"
-    }
-
-# ==========================================
-# DATA MANAGEMENT ENDPOINTS
-# ==========================================
-
-@app.post("/api/v1/data/import/demographics", tags=["Data Import"])
-async def import_demographics():
-    """Import H3 demographics data"""
-    return {
-        "status": "not_implemented",
-        "message": "Ready to import your .gpkg demographics file"
-    }
-
-@app.post("/api/v1/data/import/stores", tags=["Data Import"])  
-async def import_stores():
-    """Import store network data"""
-    return {
-        "status": "not_implemented",
-        "message": "Ready to import store network with your custom schema"
-    }
-
-@app.get("/api/v1/data/quality", tags=["Data Management"])
-async def data_quality_dashboard():
-    """Data quality monitoring dashboard"""
-    return {
-        "status": "not_implemented",
-        "message": "Data quality metrics will be available after database setup"
-    }
-
-# ==========================================
-# DEVELOPMENT AND TESTING
-# ==========================================
-
-@app.get("/dev/info", tags=["Development"])
-async def development_info():
-    """Development environment information"""
-    return {
-        "python_version": sys.version,
-        "working_directory": str(Path.cwd()),
-        "environment_variables": {
-            "ENVIRONMENT": os.getenv("ENVIRONMENT", "development"),
-            "DEBUG": os.getenv("DEBUG", "true"),
-            "NEO4J_URI": os.getenv("NEO4J_URI", "not_set"),
-            "POSTGRES_HOST": os.getenv("POSTGRES_HOST", "not_set"),
-            "REDIS_HOST": os.getenv("REDIS_HOST", "not_set")
-        },
-        "next_steps": [
-            "1. Run upgrade_to_core_infrastructure.py",
-            "2. Setup Docker infrastructure with make docker-up",
-            "3. Import demographics and store data",
-            "4. Implement H3 processing pipeline",
-            "5. Add graph embedding capabilities"
-        ]
-    }
-
-# ==========================================
-# ERROR HANDLERS
-# ==========================================
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Global exception handler"""
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Обробка HTTP помилок"""
     return JSONResponse(
-        status_code=500,
+        status_code=exc.status_code,
         content={
-            "error": "Internal server error",
-            "message": str(exc),
-            "type": type(exc).__name__
+            "error": "http_error",
+            "detail": exc.detail,
+            "status_code": exc.status_code,
+            "request_id": getattr(request.state, "request_id", None)
         }
     )
 
-# ==========================================
-# APPLICATION STARTUP
-# ==========================================
 
-@app.on_event("startup")
-async def startup_event():
-    """Application startup tasks"""
-    print("🚀 GeoRetail Core Infrastructure starting...")
-    print("📍 Existing OSM functionality preserved")
-    print("🔗 Neo4j integration maintained")
-    print("⭡ Ready for H3 and FastAPI extensions")
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Обробка помилок валідації"""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "validation_error",
+            "detail": "Invalid request data",
+            "field_errors": exc.errors(),
+            "request_id": getattr(request.state, "request_id", None)
+        }
+    )
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown tasks"""
-    print("🛑 GeoRetail Core Infrastructure shutting down...")
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Обробка всіх інших помилок"""
+    import traceback
     
-    # Cleanup connections
-    try:
-        geo_neo4j_client.close()
-    except:
-        pass
+    # Логуємо помилку (в production використовуйте proper logging)
+    print(f"Unhandled exception: {exc}")
+    print(traceback.format_exc())
+    
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "internal_server_error",
+            "detail": "An unexpected error occurred",
+            "request_id": getattr(request.state, "request_id", None)
+        }
+    )
 
-# ==========================================
-# MAIN ENTRY POINT
-# ==========================================
+
+# ================== Routes ==================
+
+# Root endpoint
+@app.get("/", tags=["root"])
+async def root() -> Dict[str, Any]:
+    """Root endpoint with API info"""
+    return {
+        "name": "GeoRetail API",
+        "version": "2.0.0",
+        "status": "running",
+        "endpoints": {
+            "auth": "/api/v2/auth",
+            "territories": "/api/v2/territories",
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "openapi": "/openapi.json",
+            "health": "/health"
+        }
+    }
+
+
+# Health check
+@app.get("/health", tags=["health"])
+async def health_check() -> Dict[str, Any]:
+    """Comprehensive health check"""
+    
+    health_status = {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "services": {
+            "api": "running",
+            "postgres": "unknown",
+            "clickhouse": "unknown",
+            "redis": "unknown"
+        }
+    }
+    
+    # Перевірка PostgreSQL
+    try:
+        from database.connections import postgres_engine
+        from sqlalchemy import text
+        async with postgres_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        health_status["services"]["postgres"] = "healthy"
+    except Exception as e:
+        health_status["services"]["postgres"] = f"unhealthy: {str(e)}"
+        health_status["status"] = "degraded"
+    
+    # Перевірка ClickHouse
+    try:
+        from database.connections import clickhouse
+        ch_client = clickhouse.get_client()
+        ch_client.execute("SELECT 1")
+        health_status["services"]["clickhouse"] = "healthy"
+    except Exception as e:
+        health_status["services"]["clickhouse"] = f"unhealthy: {str(e)}"
+        health_status["status"] = "degraded"
+    
+    # Перевірка Redis
+    try:
+        from database.connections import redis_connection
+        redis_client = await redis_connection.get_redis()
+        await redis_client.ping()
+        health_status["services"]["redis"] = "healthy"
+    except Exception as e:
+        health_status["services"]["redis"] = f"unhealthy: {str(e)}"
+        health_status["status"] = "degraded"
+    
+    return health_status
+
+
+# ================== Register Routers ==================
+
+# Auth endpoints (existing)
+app.include_router(
+    auth_router,
+    prefix="/api/v2",
+    tags=["authentication"]
+)
+
+# Territories endpoints (new for UC1)
+app.include_router(
+    territories_router,
+    tags=["territories", "explorer"]
+)
+
+# Admin endpoints (якщо існує)
+# app.include_router(admin_router, prefix="/api/v2/admin", tags=["admin"])
+
+# Insights endpoints (майбутнє)
+# app.include_router(insights_router, prefix="/api/v2/insights", tags=["insights"])
+
+# Decisions endpoints (майбутнє)
+# app.include_router(decisions_router, prefix="/api/v2/decisions", tags=["decisions"])
+
+
+# ================== Run Application ==================
 
 if __name__ == "__main__":
-    # Development server
+    import uvicorn
+    
+    # Конфігурація для development
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        log_level="info"
+        reload=True,  # Auto-reload при змінах коду
+        log_level="info",
+        access_log=True,
+        workers=1  # Для development, в production використовуйте більше
     )

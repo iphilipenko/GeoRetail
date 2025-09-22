@@ -1,0 +1,4 @@
+﻿// territories module
+
+export default {};
+

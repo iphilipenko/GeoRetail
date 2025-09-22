@@ -1,0 +1,4 @@
+﻿// config module
+
+export default {};
+

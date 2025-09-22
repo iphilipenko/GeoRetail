@@ -1,0 +1,4 @@
+﻿// explorerStore module
+
+export default {};
+

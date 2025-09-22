@@ -1,0 +1,4 @@
+﻿// bivariate module
+
+export default {};
+
