@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = Field("redis_secure_2024", env="REDIS_PASSWORD")
     REDIS_DB: int = Field(0, env="REDIS_DB")
     
+    # Neo4j
+    NEO4J_URI: str = Field("neo4j://127.0.0.1:7687", env="NEO4J_URI")
+    NEO4J_USER: str = Field("neo4j", env="NEO4J_USER")
+    NEO4J_PASSWORD: str = Field("Nopassword", env="NEO4J_PASSWORD")
+    NEO4J_DATABASE: str = Field("neo4j", env="NEO4J_DATABASE")
+    
     # ================== CORS ==================
     CORS_ORIGINS: List[str] = Field(
         default_factory=lambda: [
@@ -77,6 +83,32 @@ class Settings(BaseSettings):
     ENABLE_REDIS_CACHE: bool = Field(True, env="ENABLE_REDIS_CACHE")
     ENABLE_AUDIT_LOG: bool = Field(True, env="ENABLE_AUDIT_LOG")
     ENABLE_RATE_LIMITING: bool = Field(True, env="ENABLE_RATE_LIMITING")
+    ENABLE_NEO4J: bool = Field(True, env="ENABLE_NEO4J")
+    ENABLE_CLICKHOUSE: bool = Field(True, env="ENABLE_CLICKHOUSE")
+    
+    # ================== OSM Configuration ==================
+    OSM_RADIUS_METERS: int = Field(500, env="OSM_RADIUS_METERS")
+    OSM_CACHE_DIR: str = Field("data/osm_cache", env="OSM_CACHE_DIR")
+    
+    # ================== ML Configuration ==================
+    EMBEDDING_DIMENSIONS: int = Field(128, env="EMBEDDING_DIMENSIONS")
+    MODEL_RANDOM_STATE: int = Field(42, env="MODEL_RANDOM_STATE")
+    ML_MODEL_PATH: str = Field("models/revenue_predictor.pkl", env="ML_MODEL_PATH")
+    ML_UPDATE_INTERVAL_HOURS: int = Field(24, env="ML_UPDATE_INTERVAL_HOURS")
+    
+    # ================== File Storage ==================
+    UPLOAD_MAX_SIZE_MB: int = Field(100, env="UPLOAD_MAX_SIZE_MB")
+    UPLOAD_ALLOWED_EXTENSIONS: str = Field("csv,xlsx,xls,json,geojson", env="UPLOAD_ALLOWED_EXTENSIONS")
+    UPLOAD_FOLDER: str = Field("data/uploads", env="UPLOAD_FOLDER")
+    
+    # ================== Monitoring ==================
+    METRICS_ENABLED: bool = Field(True, env="METRICS_ENABLED")
+    METRICS_PORT: int = Field(9090, env="METRICS_PORT")
+    
+    # ================== Development Settings ==================
+    RELOAD: bool = Field(True, env="RELOAD")
+    SQL_ECHO: bool = Field(False, env="SQL_ECHO")
+    PROFILE_MODE: bool = Field(False, env="PROFILE_MODE")
     
     # ================== Computed Properties ==================
     
@@ -102,6 +134,11 @@ class Settings(BaseSettings):
         return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
     
     @property
+    def neo4j_url(self) -> str:
+        """Neo4j connection URL"""
+        return self.NEO4J_URI
+    
+    @property
     def is_production(self) -> bool:
         """Check if running in production"""
         return self.ENVIRONMENT.lower() == "production"
@@ -110,6 +147,11 @@ class Settings(BaseSettings):
     def is_development(self) -> bool:
         """Check if running in development"""
         return self.ENVIRONMENT.lower() == "development"
+    
+    @property
+    def allowed_extensions_list(self) -> List[str]:
+        """Parse allowed extensions to list"""
+        return [ext.strip() for ext in self.UPLOAD_ALLOWED_EXTENSIONS.split(',')]
     
     # ================== Validators ==================
     
@@ -132,6 +174,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+        # Дозволяємо додаткові поля для сумісності
+        extra = "allow"
 
 
 # Create settings instance
@@ -142,10 +186,15 @@ settings = Settings()
 
 import logging
 import sys
+import io
 
 
 def configure_logging():
     """Configure application logging"""
+    
+    # Fix для Windows консолі
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
     # Log format
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -161,7 +210,7 @@ def configure_logging():
     
     # Add file handler if configured
     if settings.LOG_FILE:
-        file_handler = logging.FileHandler(settings.LOG_FILE)
+        file_handler = logging.FileHandler(settings.LOG_FILE, encoding='utf-8')
         file_handler.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(file_handler)
     
@@ -176,84 +225,15 @@ def configure_logging():
 logger = configure_logging()
 
 
-# ================== Environment File Template ==================
-
-ENV_TEMPLATE = """
-# GeoRetail API v2 Environment Variables
-
-# Application
-ENVIRONMENT=development
-DEBUG=True
-PORT=8000
-
-# Security
-JWT_SECRET_KEY=your-secret-key-here-min-32-chars-change-in-production
-JWT_ALGORITHM=HS256
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
-JWT_REFRESH_TOKEN_EXPIRE_DAYS=30
-
-# PostgreSQL/PostGIS
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=georetail
-POSTGRES_USER=georetail_user
-POSTGRES_PASSWORD=georetail_secure_2024
-
-# ClickHouse
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=32769
-CLICKHOUSE_DB=geo_analytics
-CLICKHOUSE_USER=webuser
-CLICKHOUSE_PASSWORD=password123
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=redis_secure_2024
-REDIS_DB=0
-
-# CORS (comma-separated)
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-
-# API Limits
-MAX_HEXAGONS_PER_REQUEST=10000
-MAX_ADMIN_UNITS_PER_REQUEST=5000
-API_RATE_LIMIT_PER_MINUTE=100
-
-# Cache TTL (seconds)
-CACHE_TTL_ADMIN_GEOMETRIES=86400
-CACHE_TTL_ADMIN_METRICS=3600
-CACHE_TTL_H3_HEXAGONS=1800
-
-# Logging
-LOG_LEVEL=INFO
-# LOG_FILE=/var/log/georetail/api.log
-
-# Features
-ENABLE_REDIS_CACHE=True
-ENABLE_AUDIT_LOG=True
-ENABLE_RATE_LIMITING=True
-"""
-
-
-def create_env_file():
-    """Create .env file template if it doesn't exist"""
-    env_file_path = ".env"
-    
-    if not os.path.exists(env_file_path):
-        with open(env_file_path, "w") as f:
-            f.write(ENV_TEMPLATE.strip())
-        logger.info(f"Created {env_file_path} template file")
-        logger.warning("Please update .env file with your actual configuration")
-    else:
-        logger.info(f"{env_file_path} already exists")
-
-
 # Print configuration on import (for debugging)
-if settings.DEBUG:
+if settings.DEBUG and settings.is_development:
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(f"API Port: {settings.PORT}")
     logger.info(f"PostgreSQL: {settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}")
-    logger.info(f"ClickHouse: {settings.CLICKHOUSE_HOST}:{settings.CLICKHOUSE_PORT}/{settings.CLICKHOUSE_DB}")
-    logger.info(f"Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    if settings.ENABLE_CLICKHOUSE:
+        logger.info(f"ClickHouse: {settings.CLICKHOUSE_HOST}:{settings.CLICKHOUSE_PORT}/{settings.CLICKHOUSE_DB}")
+    if settings.ENABLE_REDIS_CACHE:
+        logger.info(f"Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    if settings.ENABLE_NEO4J:
+        logger.info(f"Neo4j: {settings.NEO4J_URI}")
